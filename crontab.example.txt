@@ -1,0 +1,20 @@
+# LLM API 가격 모니터 - 자동 수집 등록 예시
+#
+# 쓰는 법: /path/to/api_crawler 를 자기 설치 경로로 바꿔 crontab.txt 로 복사한 뒤 등록한다.
+#   cp crontab.example.txt crontab.txt   # 경로를 고친다
+#   crontab /path/to/api_crawler/crontab.txt   # 등록
+#   crontab -l                                 # 확인
+#   crontab -r                                 # 해제(사용자 crontab 전체가 지워지므로 다른 항목이 있으면 편집으로)
+#
+# 시각은 서버 시간대를 그대로 따른다. 서버가 Asia/Seoul이면 아래는 한국시간 00:30이다
+# (한국은 서머타임이 없어 계절에 따라 안 밀린다).
+#
+# 종료 코드는 자리별 비트를 더한 값이다. 여러 개면 합으로 나온다(예: 9 = 1 + 8).
+#   1 큰 변동(2배 이상) · 2 수집 실패 · 4 0개 파싱 · 8 아는 모델이 안 옴
+#   16 모델 사라짐 · 32 DB 적재 실패 · 64 수집 코드 경고 · 128 중복 실행 차단
+# 확인할 일이 있는 날은 화면 맨 위에 항목이 나열되고 알림 메일이 나간다.
+#
+# 화면 파일만 새로 만들 때(재수집 없이): python run.py --rebuild YYYY-MM-DD
+
+# 매일 00:30 수집
+30 0 * * * /path/to/api_crawler/.venv/bin/python /path/to/api_crawler/run.py >> /path/to/api_crawler/data/run.log 2>&1
