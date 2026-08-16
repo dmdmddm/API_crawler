@@ -4,8 +4,8 @@
 외부 리소스 없이 단일 HTML로 완결(사내 웹페이지에 그대로 삽입 가능).
 
 표시 설계(2026-08-15 개정 — 저장본이 값마다 한 줄인 PriceRow 목록으로 바뀜):
-- 회사마다 **대표 라인업**(mailer.is_representative — 수집기준_결정항목.md §category 칸)만
-  기본으로 펼치고, 나머지 줄(Flex·Fast mode·Multimodal·Finetuning 등)은 접는다.
+- 회사마다 **기본 노출 모델**(mailer.FEATURED — 최신 판과 그 직전 판)과 오늘 바뀐 줄만
+  펼치고, 나머지(구세대·특수 목적·Flex·Fast mode·Multimodal·Finetuning 등)는 접는다.
 - 표는 (모델 · 등급 · 문맥 구간 · 변형 · 지역) 을 한 행으로 하고 항목(입력·캐시 읽기·
   캐시 쓰기·출력·…)을 열로 편다. 자료형·캐시 기간은 열 이름에 붙인다(음성 입력·5m 캐시 쓰기).
   단위가 100만 토큰당이 아닌 값은 칸 안에 단위를 같이 적고, 배수 줄은 '×0.8 standard' 로 적는다.
@@ -176,8 +176,13 @@ def _provider_tables(rows, changes):
         rs = by.get(prov)
         if not rs:
             continue
-        rep = [r for r in rs if mailer.is_representative(prov, r.get("category"), r.get("tier"))]
-        rest = [r for r in rs if not mailer.is_representative(prov, r.get("category"), r.get("tier"))]
+        # 기본 노출 = FEATURED 목록(mailer) + 오늘 값이 바뀌었거나 처음 등장한 줄.
+        # 뒤 조건이 없으면 목록 밖 모델의 인하·인상이 접힌 표에 묻힌다(2026-08-16 사용자)
+        def _show(r):
+            return (mailer.is_featured(prov, r["model"], r.get("category"), r.get("tier"))
+                    or _ckey(r) in cmap)
+        rep = [r for r in rs if _show(r)]
+        rest = [r for r in rs if not _show(r)]
         url = rs[0].get("source_url") or ""
         title = (f'<h3><span>{_esc(PROVIDER_LABEL.get(prov, prov))} '
                  f'<span class="cnt">대표 {len(rep)}줄 · 전체 {len(rs)}줄</span></span>'

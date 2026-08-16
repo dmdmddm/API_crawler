@@ -28,6 +28,10 @@ _COL_ITEM = (("INPUT TOKENS (CACHE HIT)", "cache_read"),
 #   못 읽으면 예고 표를 아예 안 받는다(날짜 없는 단가는 그날 단가로 오인된다)
 _EFFECTIVE = re.compile(
     r"take\s+effect[^.]{0,60}?on\s+([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", re.I)
+# [추가 2026-08-16] 피크 시간대 문장. tier 칸에는 peak/off_peak 라는 이름만 남아서
+# 어느 시간이 피크인지 DB·화면 어디에도 안 남았다(사용자 지적). 원문 그대로 note 에 붙인다.
+# 실물 = "Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC (all other hours are off-peak)."
+_PEAK_HOURS = re.compile(r"Peak hours are[^.]*\.", re.I)
 _MONTHS = {m: i for i, m in enumerate(
     ("january", "february", "march", "april", "may", "june", "july", "august",
      "september", "october", "november", "december"), 1)}
@@ -109,6 +113,15 @@ class _DeepSeekRows:
             return []
         eff = "%s-%02d-%02d" % (m.group(3), _MONTHS[m.group(1).lower()],
                                 int(m.group(2)))
+        # 피크 시간대 문장을 시행일 문장 앞에 붙인다. 못 찾으면 시행일만 남기고 경고한다 -
+        # 시간대를 모르면 peak 단가가 언제 적용되는지 사람이 알 수 없다
+        hours = _PEAK_HOURS.search(soup.get_text(" "))
+        if hours:
+            note = f"{hours.group(0).strip()} {m.group(0).strip()}"[:300]
+        else:
+            note = m.group(0)[:300]
+            self._warns.append(
+                f"{self.provider}: 피크 시간대 문장을 못 찾음 - 어느 시간이 피크인지 안 남음")
         head = [c.upper() for c in tbl[0]]
         items = [(i, item) for i, c in enumerate(head)
                  for label, item in _COL_ITEM if label in c]
@@ -132,8 +145,7 @@ class _DeepSeekRows:
                         provider=self.provider, model=model, item=item,
                         value=v, unit="per_1M_tokens", tier=tier,
                         effective_from=eff, category="Pricing Details",
-                        source_url=self.url,
-                        note=m.group(0)[:120]))
+                        source_url=self.url, note=note))
         return out
 
 

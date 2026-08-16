@@ -37,8 +37,40 @@ MAX_SUBJECT = 90           # 제목에 쓰는 사유 부분의 길이 상한
 KIND_KO = (("added", "등록"), ("removed", "삭제"), ("changed", "가격 변동"))
 
 
-def is_representative(provider, category, tier):
-    """이 줄이 그 회사의 대표 라인업인가 = 알림·기본 화면에 낼 줄인가.
+# ── 화면 기본 노출·알림 대상 모델 (2026-08-16 사용자 확정) ──────────────
+# 고른 기준 = **회사가 지금 파는 최신 모델 + 그 직전 판**. 실제로 골라 쓸 만한 것만 남긴다.
+#   - 최신만 두면 아직 쓰는 직전 판이 빠진다(Claude Opus 5 를 쓰기 시작해도 4.8 을 계속 쓴다)
+#   - 구세대(gpt-4 이하·gpt-3.5·davinci·babbage·Gemini 2.x·grok-4.20)는 뺀다
+#   - 특수 목적(로봇 Robotics ER·실시간 Live·실시간 번역·음성 합성 TTS)은 뺀다
+#   - 라인(등급)마다 최신과 직전을 하나씩 둔다. Claude Haiku 는 4.5 다음 판이 3.5 라 그 둘이다
+# 목록에 없어도 **값이 바뀌었거나 처음 등장한 모델은 그날 화면과 메일에 나온다**(아래 예외).
+# 새 모델이 나오면 그날 저절로 보이고, 목록에 넣을지는 그때 사람이 정한다.
+FEATURED = {
+    "Anthropic": ("Claude Fable 5", "Claude Mythos 5",
+                  "Claude Opus 5", "Claude Opus 4.8",
+                  "Claude Sonnet 5", "Claude Sonnet 4.6",
+                  "Claude Haiku 4.5", "Claude Haiku 3.5"),
+    "OpenAI": ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5",
+               "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5-mini",
+               "gpt-5.4-nano", "gpt-5-nano",
+               "o4-mini", "o3", "o3-mini", "o3-pro"),
+    "Google": ("Gemini 3.7 Flash", "Gemini 3.6 Flash",
+               "Gemini 3.5 Flash-Lite", "Gemini 3.1 Flash-Lite",
+               "Gemini 3.1 Pro Preview",
+               "Gemini Embedding 2", "Gemini Embedding",
+               "Gemini 3 Pro Image (Nano Banana Pro)",
+               "Gemini 3.1 Flash Image (Nano Banana 2)",
+               "Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)",
+               "Imagen 4", "Veo 3.1", "Veo 3", "Lyria 3"),
+    "xAI": ("grok-4.6", "grok-4.5", "grok-build-0.1"),
+    "Perplexity": ("Sonar", "Sonar Pro", "Sonar Reasoning Pro",
+                   "Sonar Deep Research"),
+    "DeepSeek": ("deepseek-v4-flash", "deepseek-v4-pro"),
+}
+
+
+def _in_featured_section(provider, category, tier):
+    """그 회사에서 기본으로 내는 절·등급인가. 모델 이름과 함께 봐야 판정이 끝난다.
 
     회사마다 지목이 다르다(수집기준_결정항목.md §category 칸 · 공통 절 "알림 기준",
     2026-08-14/15 사용자). category 는 페이지 절 이름 원문(영어)이라 앞부분 일치로 본다
@@ -67,10 +99,18 @@ def is_representative(provider, category, tier):
     return True     # 모르는 회사는 다 낸다(조용히 빠지는 것보다 낫다)
 
 
-def representative_changes(changes):
-    """변동 목록 중 대표 라인업 것만."""
+def is_featured(provider, model, category=None, tier=None):
+    """이 줄을 화면 첫 화면과 메일에 낼 것인가 = 위 FEATURED 목록의 모델인가."""
+    names = FEATURED.get(provider)
+    if names is not None and model not in names:
+        return False
+    return _in_featured_section(provider, category, tier)
+
+
+def featured_changes(changes):
+    """변동 목록 중 FEATURED 목록에 든 것만."""
     return [c for c in changes
-            if is_representative(c["provider"], c.get("category"), c.get("tier"))]
+            if is_featured(c["provider"], c["model"], c.get("category"), c.get("tier"))]
 
 
 def load_config():
@@ -185,21 +225,22 @@ def build_body(date_str, headlines, changes, status, prev_date, dash_path,
     되풀이하지 않고 맨 위 요약 제목에 한 번만 적는다.
     """
     base = f"({prev_date} 값과 비교)" if prev_date else "(비교 기준 없음)"
-    # 알림은 대표 라인업만(2026-08-14 사용자 결정). 나머지 줄의 변동은 건수만 적는다.
-    # 호출부(run.py)가 이미 걸러 넘기지만 여기서도 한 번 더 - 다른 곳에서 부를 때 안전
-    all_n = len(changes)
-    changes = representative_changes(changes)
-    other_n = all_n - len(changes)
+    # 메일에 내는 것 = FEATURED 목록의 변동(회사별 절) + 목록 밖 변동(뒤에 한 절).
+    # 2026-08-16 사용자: 목록 밖이라도 값이 바뀌었으면 알린다. 옛 규칙은 건수만 적었는데,
+    # 그러면 구세대 모델 인하·인상이 메일에서 사라진다
+    featured = featured_changes(changes)
+    feat_ids = {id(c) for c in featured}
+    others = [c for c in changes if id(c) not in feat_ids]
     # 변동이 없는 날에도 수집 실패·경고로 메일이 나간다. 그런 날 '변동 내역'이라
     # 적으면 아래에 변동 절이 없어 읽는 사람이 잘린 메일로 본다
     lines = ["# 변동 내역 요약 " + base if changes else "# 수집 상태 요약"]
     lines += list(headlines) + [""]
 
-    if changes:
+    shown = 0
+    if featured:
         by_prov = {}
-        for c in changes:
+        for c in featured:
             by_prov.setdefault(c["provider"], []).append(c)
-        shown = 0
         for prov in sorted(by_prov):
             if shown >= MAX_CHANGE_LINES:
                 break
@@ -216,12 +257,19 @@ def build_body(date_str, headlines, changes, status, prev_date, dash_path,
                 if one:
                     lines.append("  " + one)
                     shown += 1
-        if shown < len(changes):
-            lines.append(f"  ... {len(changes) - shown}건 더 (대시보드에서 전체 확인)")
+        if shown < len(featured):
+            lines.append(f"  ... {len(featured) - shown}건 더 (대시보드에서 전체 확인)")
         lines.append("")
-    if other_n:
-        lines.append(f"# 대표 라인업 밖 변동 {other_n}줄 (Flex·Fast mode·Multimodal·Finetuning 등)"
-                     " - 메일에는 안 적고 대시보드 접힌 표와 DB price_change 표에 있습니다")
+    if others:
+        left = max(MAX_CHANGE_LINES - shown, 0)
+        lines.append(f"# 기본 목록 밖 변동 {len(others)}줄"
+                     " (구세대·특수 목적 모델. 화면에서는 접힌 표에 있습니다)")
+        for c in others[:left]:
+            one = _change_line(c)
+            if one:
+                lines.append("  " + one)
+        if len(others) > left:
+            lines.append(f"  ... {len(others) - left}건 더 (대시보드에서 전체 확인)")
         lines.append("")
 
     ok = [s for s in status if s.get("ok")]

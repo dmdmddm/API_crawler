@@ -2,7 +2,7 @@
 
 2026-08-15 새 경로 전환: 어댑터 run_rows()(값마다 한 줄 PriceRow) · 저장본 'rows' 형식 ·
 diff.compute_row_changes(축 12개) · db.load(줄 그대로 적재) · 알림은 대표 라인업만
-(mailer.is_representative). 옛 경로(PriceRecord·parse()·여섯 칸 diff)는 이날 삭제했다.
+(mailer.FEATURED - 최신 판과 직전 판). 옛 경로는 2026-08-16 에 삭제했다.
 
 사용:
   python run.py                     # 오늘 날짜로 실시간 수집
@@ -557,10 +557,11 @@ def main():
         except Exception as e:
             print(f"[메일] 공식 페이지 주소를 못 모음({type(e).__name__}) - 주소 없이 보냅니다")
             mail_urls = {}
-        # 알림(메일 머리줄)은 대표 라인업만 센다(2026-08-14 사용자 결정). 종료 코드와
-        # 로그 사유는 전체 줄로 센다 - 대표 밖 줄이라도 2배 변동은 파서 고장 신호일 수 있다
+        # 메일 머리줄 수치는 FEATURED 목록 기준으로 센다(제목이 구세대 모델 변동으로
+        # 차지 않게). 목록 밖 변동도 메일 본문에는 실린다(2026-08-16). 종료 코드와
+        # 로그 사유는 전체 줄로 센다 - 목록 밖 줄이라도 2배 변동은 파서 고장 신호일 수 있다
         import mailer
-        rep_changes = mailer.representative_changes(changes)
+        rep_changes = mailer.featured_changes(changes)
         spikes = [c for c in changes if c.get("spike")]
         rep_spikes = [c for c in rep_changes if c.get("spike")]
         rep_changed = [c for c in rep_changes if c["kind"] == "changed"]
@@ -581,8 +582,9 @@ def main():
             mail_heads.append("기존 모델에 새 단가 줄이 생겼습니다.")
         other_n = len(changes) - len(rep_changes)
         if other_n and not mail_heads:
-            # 대표 밖에서만 변동이 있는 날. 메일은 안 보내되 로그에는 남긴다
-            print(f"[알림] 대표 라인업 밖 변동만 {other_n}줄 - 메일 없음")
+            # 목록 밖에서만 변동이 있는 날에도 메일을 보낸다(2026-08-16 사용자).
+            # 구세대·특수 목적 모델의 인하·인상도 알아야 한다 - 옛 규칙은 로그에만 남겼다
+            mail_heads.append(f"기본 목록 밖 모델에서 가격이 바뀐 항목이 {other_n}줄 있습니다.")
         # 연결 실패와 0개 파싱은 원인도 대응도 달라서 나눠 적는다
         fetch_fail = [s["provider"] for s in status
                       if not s["ok"] and s.get("fail_kind") != "empty"]
