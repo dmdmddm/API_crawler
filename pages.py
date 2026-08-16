@@ -1,7 +1,7 @@
 """보관한 그날 페이지에서 원문 조각을 뽑아 전날과 대조한다.
 
 값이 바뀐 날 "우리가 잘못 읽은 것인지, 페이지가 원래 그런지"를 사람이 눈으로
-가릴 수 있게 근거를 남긴다(설계 = DB설계_0727.md). 파서를 안 거치고 글자만 찾아
+가릴 수 있게 근거를 남긴다(설계 = docs_아카이브_0816/DB설계_0727.md). 파서를 안 거치고 글자만 찾아
 오려내므로, 표 고르기가 틀려도 이 경로는 영향을 안 받는다.
 
 DB에는 안 넣는다(2026-08-10 사용자 결정). data/excerpts/YYYY-MM-DD.json 으로만
@@ -70,13 +70,32 @@ def fixture_html(provider, date_str=None):
         return f.read()
 
 
-def page_html(date_str, provider):
-    """보관 페이지 원문(태그 그대로). 파일이 없으면 None. 못 읽으면 예외."""
-    path = page_path(date_str, provider)
+# [추가 2026-08-16] 회사 -> 파싱 원본 종류. 어댑터의 md_url 선언과 같은 규칙
+_PARSE_KIND = None
+
+
+def parse_kind(provider):
+    """그 회사의 파싱 원본 종류('md' 또는 'html'). 값을 읽는 어댑터와 같은 규칙."""
+    global _PARSE_KIND
+    if _PARSE_KIND is None:
+        from adapters.registry import ALL_ADAPTERS
+        _PARSE_KIND = {ad.provider: ("md" if getattr(ad, "md_url", "") else "html")
+                       for ad in ALL_ADAPTERS}
+    return _PARSE_KIND.get(provider, "html")
+
+
+def _read_page(date_str, provider, kind):
+    """그날 보관 파일 하나를 읽는다. 파일이 없으면 None. 못 읽으면 예외."""
+    path = page_path(date_str, provider, kind)
     if not os.path.exists(path):
         return None
     with gzip.open(path, "rt", encoding="utf-8", errors="ignore") as f:
         return f.read()
+
+
+def page_html(date_str, provider):
+    """보관 페이지 원문(태그 그대로). 파일이 없으면 None. 못 읽으면 예외."""
+    return _read_page(date_str, provider, "html")
 
 
 def flatten(html):
@@ -89,41 +108,76 @@ def flatten(html):
 
 
 def page_text(date_str, provider):
-    """보관 페이지에서 태그를 뗀 한 줄 텍스트. 파일이 없거나 못 읽으면 None.
+    """파싱 원본에서 뽑은 한 줄 텍스트. 파일이 없거나 못 읽으면 None.
 
-    태그를 떼는 이유 = 페이지 안에서 모델 이름이 <span> 등으로 쪼개져 있으면
-    HTML 원문에서는 이름이 안 찾아진다.
+    [수정 2026-08-16] 보는 파일을 HTML 고정에서 그 회사의 파싱 원본(마크다운
+    회사는 md, DeepSeek 는 html)으로 바꿈. 값을 여기서 읽었으니 근거 조각과
+    전날 대조도 같은 글자를 봐야 한다. 실측: OpenAI 새 페이지는 HTML 쪽에
+    모델 85개 중 30개만 있어 나머지는 대조가 아예 안 됐다.
+    읽는 방법은 어댑터와 독립(파서를 안 거치고 글자만 오려 문자열 비교).
+
+    HTML 은 태그를 뗀다 - 이름이 <span> 등으로 쪼개져 있으면 원문에서 안
+    찾아진다. 마크다운은 태그가 없어 공백만 한 칸으로 접는다(flatten 과 같은
+    이유 - 줄바꿈이 날마다 달라도 같은 조각으로 보여야 전날과 대조가 된다).
     """
+    kind = parse_kind(provider)
     try:
-        html = page_html(date_str, provider)
+        raw = _read_page(date_str, provider, kind)
     except Exception as e:
-        print(f"  [원문] {date_str} {provider} 페이지를 못 읽음({type(e).__name__})")
+        print(f"  [원문] {date_str} {provider} 파싱 원본({kind})을 "
+              f"못 읽음({type(e).__name__})")
         return None
-    return None if html is None else flatten(html)
+    if raw is None:
+        return None
+    return " ".join(raw.split()) if kind == "md" else flatten(raw)
 
 
 def seen_in_page(date_str, provider, names):
-    """그날 보관 페이지에 아직 이름이 남아 있는 것만 고른다.
+    """그날 보관본에 아직 이름이 남아 있는 것만 고른다.
 
     반환: (남아 있는 이름 집합, 못 본 사유 또는 None)
 
-    ★HTML 원문과 태그 뗀 텍스트를 둘 다 본다. 2026-08-12 OpenAI 가 가격 데이터를
-      <astro-island props="..."> 속성 안 JSON 으로 옮겼는데, 속성 안 글자는
-      get_text() 로 안 나온다. 그날 실측: gpt-5.4-nano 가 원문 3회 · 텍스트 0회.
-      거꾸로 이름이 <span> 등으로 쪼개진 페이지는 텍스트 쪽에서만 잡힌다.
+    [수정 2026-08-16] 파싱 원본(마크다운 회사는 md)을 먼저 보고, HTML 보관본도
+    있으면 같이 본다. 어느 쪽에든 이름이 있으면 '남아 있음'(= 삭제 의심 유지).
+    md 에서 빠졌는데 HTML 화면에 남은 경우는 회사의 삭제가 아니라 원본 선택
+    문제일 수 있어서다. 파싱 원본이 없으면 확인 못 한 것으로 돌려준다 -
+    HTML 만 봐서는 md 회사의 삭제 여부를 말할 수 없다(OpenAI 실측 30/85).
+
+    ★HTML 은 원문과 태그 뗀 텍스트를 둘 다 본다. 2026-08-12 OpenAI 가 가격
+      데이터를 <astro-island props="..."> 속성 안 JSON 으로 옮겼는데, 속성 안
+      글자는 get_text() 로 안 나온다. 그날 실측: gpt-5.4-nano 가 원문 3회 ·
+      텍스트 0회. 거꾸로 이름이 <span> 으로 쪼개진 페이지는 텍스트 쪽에서만 잡힘.
     """
+    kind = parse_kind(provider)
     try:
-        html = page_html(date_str, provider)
+        src = _read_page(date_str, provider, kind)
     except Exception as e:
         return set(), f"{type(e).__name__}: {e}"
-    if html is None:
-        return set(), "보관 페이지 없음"
-    try:
-        text = flatten(html)
-    except Exception:
-        text = ""
+    if src is None:
+        return set(), f"파싱 원본({kind}) 보관 없음"
+    # [추가 2026-08-16 검증 반영] 빈 파일 = 확인 불가. 그냥 지나가면 전 모델이
+    #   사유 없이 '진짜 없음'이 되어 DB 비고까지 적힌다
+    if not src.strip():
+        return set(), f"파싱 원본({kind})이 비어 있음"
+    # [추가 2026-08-16 검증 반영] 공백 접은 판도 같이 본다. page_text(조각 층)와
+    #   같은 접기 - 이름이 줄바꿈으로 갈리면 두 층의 판정이 어긋난다
+    texts = [src, " ".join(src.split())]
+    if kind == "md":
+        try:
+            html = page_html(date_str, provider)
+        except Exception:
+            html = None
+        if html:
+            texts.append(html)
+    else:
+        html = src
+    if html:
+        try:
+            texts.append(flatten(html))
+        except Exception:
+            pass
     return {n for n in names
-            if occurrences(html, n) or occurrences(text, n)}, None
+            if any(occurrences(t, n) for t in texts)}, None
 
 
 def occurrences(text, name):
