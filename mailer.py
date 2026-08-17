@@ -312,14 +312,40 @@ def _ko_date(date_str):
     return f"{int(parts[1])}월 {int(parts[2])}일"
 
 
-def build_subject(date_str, headlines, hints=None):
+def _change_digest(changes):
+    """[추가 2026-08-17 사용자] 변동만 있고 문제는 없는 날의 제목 속.
+
+    실물: 'DeepSeek 단가 30건 바뀜'. 회사가 둘·셋이면 이름을 잇고, 넷부터는
+    '4개사' 로 줄인다. 제목에 회사가 있으면 열기 전에 어디 일인지 알 수 있다.
+    건수는 그날 바뀐 전부(주요 모델 밖 포함)를 센다 - 본문이 둘로 나눠 적는다.
+    """
+    if not changes:
+        return ""
+    provs = sorted({c["provider"] for c in changes})
+    if len(provs) == 1:
+        who = provs[0]
+    elif len(provs) <= 3:
+        who = " · ".join(provs)
+    else:
+        who = f"{len(provs)}개사"
+    return f"{who} 단가 {len(changes)}건 바뀜"
+
+
+def build_subject(date_str, headlines, hints=None, changes=None):
     """제목. 날짜 + 사유 요약.
 
     hints = 짧은 사유 목록(run.py 의 reasons). 본문 첫 줄용 문장은 완결된
     문장이라 제목에 넣으면 길다. 메일함 목록에서 한눈에 보이게 짧은 쪽을 쓴다.
+    수집이 다 잘된 날은 짧은 사유가 안 만들어지므로 변동 요약을 대신 쓴다
+    (2026-08-17 전에는 그런 날 본문 문장이 통째로 제목에 올라가 200자가 넘었다).
     """
     when = _ko_date(date_str)
-    src = [h for h in (hints or []) if h] or [h.rstrip(".") for h in (headlines or [])]
+    src = [h for h in (hints or []) if h]
+    if not src:
+        digest = _change_digest(changes)
+        if digest:
+            return f"[LLM 가격 모니터] {when} · {digest}"
+        src = [h.rstrip(".") for h in (headlines or [])]
     if not src:
         return f"[LLM 가격 모니터] {when} · 확인 필요"
     head = " / ".join(src[:2])
@@ -366,7 +392,7 @@ def _prepare_and_send(date_str, headlines, changes, status, prev_date, dash_path
         return False, "받는 쪽 메일 서버를 찾지 못함 (설정의 smtp_host 확인)"
 
     msg = EmailMessage()
-    msg["Subject"] = build_subject(date_str, headlines, hints)
+    msg["Subject"] = build_subject(date_str, headlines, hints, changes)
     msg["From"] = cfg["from"]
     msg["To"] = ", ".join(cfg["to"])
     msg["Date"] = formatdate(localtime=True)
