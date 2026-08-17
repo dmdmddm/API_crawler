@@ -639,7 +639,16 @@ def _trend(history):
     # (is_featured 는 줄 단위 판정이라 절 이름이 없는 이 자리에서는 전부 거짓이 된다)
     feat = [k for k in keys if k.split("|", 1)[1] in mailer.FEATURED.get(k.split("|", 1)[0], ())]
     rest = [k for k in keys if k not in feat]
-    dflt = set(moved[:6] or (feat or keys)[:4])
+    # [수정 2026-08-17 사용자] 값이 움직인 모델이 없는 날의 기본 선택 = 회사마다 하나씩.
+    # 목록 앞 넷을 집으면 한 회사 것만 켜져 첫 화면에서 회사 비교가 안 됐다.
+    # 회사별 대표 = FEATURED 목록에 적힌 순서(최신 판이 앞)에서 자료가 있는 첫 모델
+    one_each = []
+    for prov in PROVIDER_ORDER:
+        rep = next((f"{prov}|{m}" for m in mailer.FEATURED.get(prov, ())
+                    if f"{prov}|{m}" in keys), None)
+        if rep:
+            one_each.append(rep)
+    dflt = set(moved[:6] or one_each[:6] or (feat or keys)[:4])
 
     def _grp(section):
         out = ""

@@ -538,7 +538,18 @@ HISTORY_KINDS = (
     ("standard", "cache_write", "cache_write"),
     ("batch", "input", "batch_input"),
     ("batch", "output", "batch_output"),
+    # [추가 2026-08-17] 시간대 요금제(DeepSeek). 안 넣으면 2026-08-17 개편 뒤로
+    # DeepSeek 선이 그래프에서 끊긴다 - 그 회사의 상시 등급이 peak·off_peak 뿐이라서다.
+    # 같은 화면 항목(입력 등)에 등급이 둘이므로 아래에서 계열 키와 라벨에 등급을 넣는다
+    ("peak", "input", "input"),
+    ("off_peak", "input", "input"),
+    ("peak", "output", "output"),
+    ("off_peak", "output", "output"),
+    ("peak", "cache_read", "cache_read"),
+    ("off_peak", "cache_read", "cache_read"),
 )
+# 화면 항목 하나에 등급이 여럿일 수 있는 것 = 라벨에 등급 이름을 적는다
+TIER_KO = {"peak": "피크", "off_peak": "오프피크"}
 
 
 def history(conn):
@@ -569,26 +580,46 @@ def history(conn):
         """, tuple(x for t, i, _ in HISTORY_KINDS for x in (t, i)))
         for prov, model, tier, item, ef, et, ctx, mo, va, tt, rg, date, value \
                 in cur.fetchall():
-            rows.append((prov, model, kind[(tier, item)], ef, et, ctx,
+            rows.append((prov, model, kind[(tier, item)], tier, ef, et, ctx,
                          (mo, va, tt, rg), date, float(value)))
 
+    # ★계열 키에 등급(tier)이 들어간다. 빼면 같은 화면 항목의 피크·오프피크가
+    #   한 계열로 묶여 하루에 값이 둘 붙는다(2026-08-17 시간대 요금제 추가)
+    # ★[수정 2026-08-17] 시기 표시(effective_from·to)는 먼저 빼고 묶는다. 회사가
+    #   시행 전에 붙여 둔 시기 표시를 시행 뒤에 떼면 같은 값이 계열 둘로 갈려
+    #   선이 조각난다(DeepSeek 피크 단가가 08-16 예고분과 08-17 상시분으로 갈렸다).
+    #   단 한 날짜에 값이 둘 붙으면 그건 진짜 다른 단가이므로 시기별로 되돌린다
+    #   (Anthropic '8월 31일까지 / 9월 1일부터'처럼 겹쳐 오는 경우 방어)
+    merged = {}
+    for prov, model, k, tier, ef, et, ctx, rest, date, value in rows:
+        merged.setdefault((prov, model, k, tier, ctx, rest), {}).setdefault(
+            (ef, et), []).append([date.isoformat(), value])
+
     series = {}
-    for prov, model, k, ef, et, ctx, rest, date, value in rows:
-        series.setdefault((prov, model, k, ef, et, ctx, rest), []).append(
-            [date.isoformat(), value])
+    for (prov, model, k, tier, ctx, rest), by_period in merged.items():
+        pts = [p for lst in by_period.values() for p in lst]
+        if len({d for d, _ in pts}) == len(pts):          # 날짜가 안 겹친다 = 한 선
+            series[(prov, model, k, tier, None, None, ctx, rest)] = pts
+        else:
+            for (ef, et), lst in by_period.items():
+                series[(prov, model, k, tier, ef, et, ctx, rest)] = lst
 
     # 무엇이 갈리는지 세어, 갈리는 축만 라벨에 적는다
     axes = {}
-    for prov, model, k, ef, et, ctx, rest in series:
-        a = axes.setdefault((prov, model, k), {"period": set(), "ctx": set(), "rest": set()})
+    for prov, model, k, tier, ef, et, ctx, rest in series:
+        a = axes.setdefault((prov, model, k), {"period": set(), "ctx": set(),
+                                               "rest": set(), "tier": set()})
         a["period"].add((ef, et))
         a["ctx"].add(ctx)
         a["rest"].add(rest)
+        a["tier"].add(tier)
 
     out = []
-    for (prov, model, k, ef, et, ctx, rest), points in series.items():
+    for (prov, model, k, tier, ef, et, ctx, rest), points in series.items():
         a = axes[(prov, model, k)]
         tags = []
+        if len(a["tier"]) > 1 and tier in TIER_KO:
+            tags.append(TIER_KO[tier])
         if len(a["period"]) > 1:
             if et:
                 tags.append(f"{et.isoformat()}까지")
