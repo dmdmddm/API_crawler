@@ -469,6 +469,9 @@ TREND_CSS = """
 .trend .pick .grp>b{display:block;color:var(--muted);font-size:.76rem;margin-bottom:4px;}
 .trend .pick label{display:inline-block;margin:0 12px 5px 0;font-size:.82rem;cursor:pointer;}
 .trend .pick label input{margin-right:4px;}
+/* 주요 모델과 그 밖의 모델을 가르는 선(2026-08-17 사용자) */
+.trend .pick .grp-sep{border-top:1px solid var(--line);margin:14px 0 0;padding-top:8px;
+  color:var(--faint);font-size:.74rem;font-weight:600;}
 .trend .note{color:var(--faint);font-size:.78rem;margin-top:8px;}
 """
 
@@ -568,9 +571,13 @@ TREND_JS = """
     }
     var uniq=[]; xs.forEach(function(d){if(uniq[uniq.length-1]!==d)uniq.push(d);});
     var step=Math.max(1,Math.ceil(uniq.length/6));
+    // 양 끝 날짜는 안쪽으로 붙인다. 가운데 정렬로 두면 첫 날짜는 왼쪽으로,
+    // 마지막 날짜는 오른쪽으로 절반이 그림 밖에 나가 잘린다(2026-08-17 사용자)
     uniq.forEach(function(d,i){
       if(i%step && i!==uniq.length-1) return;
-      out+='<text class="axis" x="'+px(d)+'" y="'+(H-12)+'" text-anchor="middle">'+d.slice(5)+'</text>';
+      var a='middle';
+      if(uniq.length>1){ if(i===0) a='start'; else if(i===uniq.length-1) a='end'; }
+      out+='<text class="axis" x="'+px(d)+'" y="'+(H-12)+'" text-anchor="'+a+'">'+d.slice(5)+'</text>';
     });
     lines.forEach(function(l,i){
       var c=COLORS[i%COLORS.length];
@@ -591,7 +598,7 @@ TREND_JS = """
     var miss=Object.keys(on).length-Object.keys(drawn).length;
     note.textContent=(log?'값 폭이 커서 로그 눈금으로 그렸습니다. ':'')+
       (miss>0?'선택한 모델 중 '+miss+'개는 '+KIND[it]+' 단가가 없거나 기간 안에 값이 없어 빠졌습니다. ':'')+
-      '점 위에 마우스를 올리면 그날 값이 나옵니다. 백만 토큰당 단가입니다.';
+      '점 위에 마우스를 올리면 그날 값이 나옵니다.';
   }
   var plot=box.querySelector('.plot');
   plot.addEventListener('mouseover',function(e){
@@ -618,7 +625,8 @@ def _trend(history):
     """가격 추이 절. history 가 비면(DB를 못 읽었거나 값이 없으면) 아무것도 안 넣는다."""
     if not history:
         return ""
-    # 기본으로 켜 둘 모델 = 기간 안에서 값이 실제로 움직인 것. 하나도 없으면 앞 넷.
+    import mailer
+    # 기본으로 켜 둘 모델 = 기간 안에서 값이 실제로 움직인 것. 하나도 없으면 주요 모델 앞 넷.
     moved, keys = [], []
     for s in history:
         k = f"{s['provider']}|{s['model']}"
@@ -626,19 +634,30 @@ def _trend(history):
             keys.append(k)
         if len({p[1] for p in s["points"]}) > 1 and k not in moved:
             moved.append(k)
-    dflt = set(moved[:6] or keys[:4])
+    # [수정 2026-08-17 사용자] 모델 고르기에서 주요 모델을 위에 모으고 나머지는 선 아래로.
+    # 여기서는 절·등급이 아니라 모델 이름만 보므로 FEATURED 목록을 직접 본다
+    # (is_featured 는 줄 단위 판정이라 절 이름이 없는 이 자리에서는 전부 거짓이 된다)
+    feat = [k for k in keys if k.split("|", 1)[1] in mailer.FEATURED.get(k.split("|", 1)[0], ())]
+    rest = [k for k in keys if k not in feat]
+    dflt = set(moved[:6] or (feat or keys)[:4])
 
-    groups = ""
-    for prov in PROVIDER_ORDER:
-        ks = [k for k in keys if k.startswith(prov + "|")]
-        if not ks:
-            continue
-        boxes = "".join(
-            f'<label><input type="checkbox" value="{_esc(k)}"'
-            f'{" checked" if k in dflt else ""}>{_esc(k.split("|", 1)[1])}</label>'
-            for k in ks)
-        groups += (f'<div class="grp"><b>{_esc(PROVIDER_LABEL.get(prov, prov))}</b>'
-                   f"{boxes}</div>")
+    def _grp(section):
+        out = ""
+        for prov in PROVIDER_ORDER:
+            ks = [k for k in section if k.startswith(prov + "|")]
+            if not ks:
+                continue
+            boxes = "".join(
+                f'<label><input type="checkbox" value="{_esc(k)}"'
+                f'{" checked" if k in dflt else ""}>{_esc(k.split("|", 1)[1])}</label>'
+                for k in ks)
+            out += (f'<div class="grp"><b>{_esc(PROVIDER_LABEL.get(prov, prov))}</b>'
+                    f"{boxes}</div>")
+        return out
+
+    groups = _grp(feat)
+    if rest:
+        groups += (f'<div class="grp-sep">그 밖의 모델 {len(rest)}개</div>' + _grp(rest))
 
     # 날짜를 한 번만 적고 계열마다 값 배열만 둔다(파일 크기. 2026-08-01 실측 36KB→76KB 교훈)
     dates = sorted({p[0] for s in history for p in s["points"]})
