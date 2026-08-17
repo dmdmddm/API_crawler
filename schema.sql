@@ -1,24 +1,24 @@
--- LLM API 가격 모니터 - 표 생성 SQL (3판, 2026-08-15)
+-- LLM API 가격 모니터 - 표 생성 SQL (4판, 2026-08-17)
 -- 대상: MySQL 8.0.46
 --
--- 3판 = 2026-08-14 "수집 기준 다시 세우기" 확정에 따라 DB 를 갈아엎고 새로 만든다
--- (수집기준_결정항목.md 개요 절 · 검증 반영 보강 절 · 전환 기조 절).
---   계승: DB 이름 api_price · 계정 4개 · 접속 설정 파일 · 살아남는 컬럼 이름 · 뷰 이름 4개
---   새로: 스키마(이 파일) · 데이터(빈 채로 시작, 소급 없음) · 파이프라인 코드
--- 2판(2026-07-27)에서 바뀐 것
---   (1) price_series.multiplier 신설 - 회사가 금액을 안 적고 "표준의 몇 배"로만 공지하는
---       요금(xAI Batch 20% off · Priority 2x 등)을 계산해 넣지 않고 배수 그대로 둔다.
---       채워진 줄에서는 price_point.value 가 금액이 아니라 배수(0.8 · 2.0)다. 고유 키에 넣는다
---   (2) price_series.category 신설 - 페이지 절 이름 원문(Flagship models 등). 알림 필터의
---       근거. 고유 키에는 안 넣는다(gpt-5.5-cyber 가 여드레 사이 절을 옮긴 실측 - 옮겨도
---       같은 계열로 두고 마지막 본 절로 갱신한다)
---   (3) variant 폭 60 -> 120 (Google 영상 변형 표기가 길다. 실측 최대 64)
---   (4) region 기본값 '' -> 'global' (지역 할증은 자리 모델 '(all models)' 의 배수 줄로 들어오고
---       region='regional'. 값은 전부 영어)
---   (5) context_min_tokens · context_max_tokens 삭제 - 채움 규칙이 없던 죽은 칸. 구간은
---       context_label(short/long/low/medium/high) 이 담고 원문은 price_point.note 에 남는다
---   (6) effective_to 는 남기되 새 어댑터는 안 채운다(변동·시기 원문은 note 에 영어 그대로,
---       2026-08-15 사용자). effective_from 은 예고 단가 판정(db.applies_on)에 쓴다
+-- 4판 = 표·컬럼 이름을 사람이 읽는 이름으로 바꾸고, 실행 번호(run_id)를 없앤 판.
+-- 3판(2026-08-15)에서 바뀐 것만 적는다. 저장하는 값과 축은 그대로다.
+--   (1) 표 이름 4개: price_condition -> price_condition · daily_price -> daily_price ·
+--       crawling_run -> crawling_run · crawling_run_provider -> crawling_run_provider
+--       (provider · model · price_change 는 그대로)
+--   (2) run_id 삭제. 수집 실행을 가리키는 열쇠가 날짜(run_date)가 된다.
+--       daily_price 는 이미 observed_date 가 있어 칸이 통째로 없어지고,
+--       price_change 는 run_date · prev_run_date 로 바뀐다.
+--       ★source 는 열쇠에서 빠지고 기록용 칸으로만 남는다(하루 1실행 전제).
+--       과거 소급(archive_backfill)은 2026-08-14 에 폐기했다. 되살리면 이 전제를 다시 본다
+--   (3) 읽기 어렵던 컬럼 이름: value -> price · ok -> success · attempts -> tries ·
+--       warns -> warnings · kind -> change_type · pct -> change_pct ·
+--       is_spike -> is_big_change · ef_key/et_key -> from_key/to_key ·
+--       review_required/review_reasons -> check_needed/check_reasons ·
+--       models_total -> model_count · points_total/row_count -> price_count
+--   (4) 축 이름은 그대로 둔다(item·unit·tier·context_label·modality·variant·cache_ttl·
+--       region·multiplier·category). 값과 함께 사용자가 정한 이름이고 명세·어댑터 여섯 곳이
+--       이 이름으로 쓰여 있다(수집기준_결정항목.md §item·unit 표준 목록·§context_label 값 규칙)
 --
 -- 실행(관리자): sudo mysql < schema.sql   (DROP 은 여기 없다 - 사용자가 별도 문장으로)
 
@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS model (
 --    값은 여기 없다. 축이 새로 나올 때만 줄이 늘어난다.
 --    실물(2026-08-15 하루치 1,285줄): item 16종 · unit 19종 · tier 7종(standard/batch/flex/
 --    priority/fast/peak/off_peak) · context 6종 · modality 5종 · variant 40종 · category 60종
-CREATE TABLE IF NOT EXISTS price_series (
-  series_id     INT UNSIGNED NOT NULL AUTO_INCREMENT,
+CREATE TABLE IF NOT EXISTS price_condition (
+  condition_id  INT UNSIGNED NOT NULL AUTO_INCREMENT,
   model_id      INT UNSIGNED NOT NULL,
   item          VARCHAR(30) NOT NULL,              -- input/output/cache_read/cache_write/generation/tool_call/...
                                                    --   표준 목록 = 수집기준_결정항목.md §item·unit 표준
@@ -72,84 +72,81 @@ CREATE TABLE IF NOT EXISTS price_series (
   effective_from DATE NULL,                        -- 이 날부터 적용(예고 단가. 그 전에는 적재 안 함)
   effective_to   DATE NULL,                        -- 이 날까지 적용(2026-08-15 부터는 채우지 않음. 원문은 note)
   -- 고유 키에 NULL이 들어가면 중복이 안 걸리므로 대체값을 쓴다
-  ef_key        DATE GENERATED ALWAYS AS (IFNULL(effective_from, '1000-01-01')) STORED,
-  et_key        DATE GENERATED ALWAYS AS (IFNULL(effective_to,   '9999-12-31')) STORED,
+  from_key      DATE GENERATED ALWAYS AS (IFNULL(effective_from, '1000-01-01')) STORED,
+  to_key        DATE GENERATED ALWAYS AS (IFNULL(effective_to,   '9999-12-31')) STORED,
   first_seen    DATE NOT NULL,
   last_seen     DATE NOT NULL,
   source_url    VARCHAR(500) NOT NULL DEFAULT '',
-  PRIMARY KEY (series_id),
-  UNIQUE KEY uq_series (model_id, item, unit, tier, context_label,
-                        modality, variant, cache_ttl, region, multiplier, ef_key, et_key),
-  KEY ix_series_model (model_id),
-  CONSTRAINT fk_series_model FOREIGN KEY (model_id)
+  PRIMARY KEY (condition_id),
+  UNIQUE KEY uq_condition (model_id, item, unit, tier, context_label,
+                        modality, variant, cache_ttl, region, multiplier, from_key, to_key),
+  KEY ix_condition_model (model_id),
+  CONSTRAINT fk_condition_model FOREIGN KEY (model_id)
     REFERENCES model (model_id)
 ) ENGINE=InnoDB;
 
 -- 4. 수집 실행 1회 (하루 1줄)
-CREATE TABLE IF NOT EXISTS collection_run (
-  run_id        INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  run_date      DATE NOT NULL,                     -- 한국시간 기준 날짜 라벨
-  source        VARCHAR(20) NOT NULL DEFAULT 'live', -- live / archive_backfill
+CREATE TABLE IF NOT EXISTS crawling_run (
+  run_date      DATE NOT NULL,                     -- 한국시간 기준 날짜. 이 표의 열쇠
+  source        VARCHAR(20) NOT NULL DEFAULT 'live', -- 기록용. 하루 1실행 전제라 열쇠에 안 넣는다
   started_at    DATETIME NOT NULL,                 -- 세계표준시
   finished_at   DATETIME NULL,
   git_commit    CHAR(40) NOT NULL DEFAULT '',
   snapshot_path VARCHAR(300) NOT NULL DEFAULT '',
-  models_total  SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 실제로 넣은 줄에서 센 모델 수
-  points_total  SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 실제로 넣은 관측 줄 수(하루 약 1,300)
-  review_required TINYINT(1) NOT NULL DEFAULT 0,
-  review_reasons  VARCHAR(500) NOT NULL DEFAULT '',
-  PRIMARY KEY (run_id),
-  UNIQUE KEY uq_run (run_date, source)
+  model_count   SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 실제로 넣은 줄에서 센 모델 수
+  price_count   SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 실제로 넣은 단가 건수(하루 약 1,300)
+  check_needed  TINYINT(1) NOT NULL DEFAULT 0,          -- 사람이 한 번 봐야 하는 날인가
+  check_reasons VARCHAR(500) NOT NULL DEFAULT '',
+  PRIMARY KEY (run_date)
 ) ENGINE=InnoDB;
 
 -- 5. 제공사별 수집 결과 (실행 1회당 6줄)
-CREATE TABLE IF NOT EXISTS provider_run (
-  run_id       INT UNSIGNED NOT NULL,
+CREATE TABLE IF NOT EXISTS crawling_run_provider (
+  run_date     DATE NOT NULL,
   provider_id  TINYINT UNSIGNED NOT NULL,
-  ok           TINYINT(1) NOT NULL,
+  success      TINYINT(1) NOT NULL,
   model_count  SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 그 회사에서 넣은 모델 수
-  row_count    SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 그 회사에서 넣은 관측 줄 수 (3판 신설)
-  attempts     TINYINT UNSIGNED NOT NULL DEFAULT 1,
-  warns        TEXT NULL,
+  price_count  SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 그 회사에서 넣은 단가 건수
+  tries        TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  warnings     TEXT NULL,
   error        TEXT NULL,
-  PRIMARY KEY (run_id, provider_id),
-  CONSTRAINT fk_prun_run FOREIGN KEY (run_id)
-    REFERENCES collection_run (run_id) ON DELETE CASCADE,
-  CONSTRAINT fk_prun_provider FOREIGN KEY (provider_id)
+  PRIMARY KEY (run_date, provider_id),
+  CONSTRAINT fk_crp_run FOREIGN KEY (run_date)
+    REFERENCES crawling_run (run_date) ON DELETE CASCADE,
+  CONSTRAINT fk_crp_provider FOREIGN KEY (provider_id)
     REFERENCES provider (provider_id)
 ) ENGINE=InnoDB;
 
 -- 6. 가격 관측. 계열 하나가 그날 얼마였는가.
-CREATE TABLE IF NOT EXISTS price_point (
-  series_id     INT UNSIGNED NOT NULL,
-  run_id        INT UNSIGNED NOT NULL,
-  observed_date DATE NOT NULL,
-  value         DECIMAL(18,10) NOT NULL,           -- 금액. multiplier 계열에서는 배수
+CREATE TABLE IF NOT EXISTS daily_price (
+  condition_id  INT UNSIGNED NOT NULL,             -- 어느 조건 조합(price_condition)
+  observed_date DATE NOT NULL,                     -- 관측한 날. crawling_run.run_date 와 같다
+  price         DECIMAL(18,10) NOT NULL,           -- 금액. multiplier 계열에서는 배수
   note          VARCHAR(300) NOT NULL DEFAULT '',  -- 그날 페이지의 원문 조각(영어 그대로. 시기·변동 문구 포함)
-  PRIMARY KEY (series_id, run_id),                 -- 같은 계열이 한 실행에 두 번 못 들어옴
-  KEY ix_point_run (run_id),                       -- 그날 전체 조회 + 외래 키에 필요
-  CONSTRAINT fk_point_run FOREIGN KEY (run_id)
-    REFERENCES collection_run (run_id) ON DELETE CASCADE,
-  CONSTRAINT fk_point_series FOREIGN KEY (series_id)
-    REFERENCES price_series (series_id)
+  PRIMARY KEY (condition_id, observed_date),       -- 같은 조건이 하루에 두 번 못 들어옴
+  KEY ix_price_date (observed_date),               -- 그날 전체 조회 + 외래 키에 필요
+  CONSTRAINT fk_price_run FOREIGN KEY (observed_date)
+    REFERENCES crawling_run (run_date) ON DELETE CASCADE,
+  CONSTRAINT fk_price_condition FOREIGN KEY (condition_id)
+    REFERENCES price_condition (condition_id)
 ) ENGINE=InnoDB;
 
 -- 7. 변동 기록. 관측에서 계산할 수 있지만 매일 이미 계산하는 값이라 같이 둔다.
 CREATE TABLE IF NOT EXISTS price_change (
-  change_id     BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  run_id        INT UNSIGNED NOT NULL,             -- 이번 수집
-  prev_run_id   INT UNSIGNED NULL,                 -- 비교 대상 수집
-  series_id     INT UNSIGNED NOT NULL,
-  kind          VARCHAR(10) NOT NULL,              -- changed / added / removed
-  old_value     DECIMAL(18,10) NULL,
-  new_value     DECIMAL(18,10) NULL,
-  pct           DECIMAL(12,4) NULL,                -- 변동률(%)
-  is_spike      TINYINT(1) NOT NULL DEFAULT 0,     -- 변동 폭이 큼(2배 이상)
+  change_id      BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  run_date       DATE NOT NULL,                    -- 이번 수집
+  prev_run_date  DATE NULL,                        -- 비교 대상 수집(회사마다 다를 수 있다)
+  condition_id   INT UNSIGNED NOT NULL,
+  change_type    VARCHAR(10) NOT NULL,             -- changed / added / removed
+  old_price      DECIMAL(18,10) NULL,
+  new_price      DECIMAL(18,10) NULL,
+  change_pct     DECIMAL(12,4) NULL,               -- 변동률(%)
+  is_big_change  TINYINT(1) NOT NULL DEFAULT 0,    -- 2배 이상 움직임
   PRIMARY KEY (change_id),
-  UNIQUE KEY uq_change (run_id, series_id),
-  KEY ix_change_series (series_id, run_id),
-  CONSTRAINT fk_chg_run FOREIGN KEY (run_id)
-    REFERENCES collection_run (run_id) ON DELETE CASCADE,
-  CONSTRAINT fk_chg_series FOREIGN KEY (series_id)
-    REFERENCES price_series (series_id)
+  UNIQUE KEY uq_change (run_date, condition_id),
+  KEY ix_change_condition (condition_id, run_date),
+  CONSTRAINT fk_chg_run FOREIGN KEY (run_date)
+    REFERENCES crawling_run (run_date) ON DELETE CASCADE,
+  CONSTRAINT fk_chg_condition FOREIGN KEY (condition_id)
+    REFERENCES price_condition (condition_id)
 ) ENGINE=InnoDB;

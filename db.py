@@ -10,8 +10,8 @@
 값을 그대로 옮기는 것이 되고, 값이 틀리면 넣기 코드만 의심하면 된다.
 
 구조: 조건(계열)과 값(관측)을 나눠 넣는다.
-  price_series  = "이 모델의 이 조건에서 이 항목" 하나. 조건이 새로 나올 때만 늘어남
-  price_point   = 그 계열이 그날 얼마였는가. 매일 쌓임
+  price_condition  = "이 모델의 이 조건에서 이 항목" 하나. 조건이 새로 나올 때만 늘어남
+  daily_price   = 그 계열이 그날 얼마였는가. 매일 쌓임
 
 2026-08-15 3판: 저장본이 PriceRow 줄 목록(한 줄 = 값 하나, 축 12개)이 되어 여섯 칸
 순회(FIELD_MAP)를 없애고 줄을 그대로 넣는다. 축에 multiplier 가 들어가고 category 는
@@ -53,7 +53,7 @@ _PERIOD = re.compile(
 NOTE_STOP = "부터 API 가격이 공지되지 않음"
 NOTE_BACK = "부터 다시 공지됨"
 NOTE_MAX = 300                 # schema.sql model.note VARCHAR(300)
-POINT_NOTE_MAX = 300           # schema.sql price_point.note VARCHAR(300)
+POINT_NOTE_MAX = 300           # schema.sql daily_price.note VARCHAR(300)
 
 # 단위 표기 통일. 어댑터마다 pricetext 파서 어휘를 쓰는데 같은 뜻이 둘로 갈린 것을
 # 적재층에서 하나로(수집기준_결정항목.md 경과 표 0815 밤 행: per_1K_call(xAI) 대
@@ -254,28 +254,28 @@ def model_id(cur, prov_id, name, date):
     return cur.lastrowid
 
 
-def series_id(cur, mid, row, date):
+def condition_id(cur, mid, row, date):
     where = " AND ".join(f"{a}=%s" for a in SERIES_AXES)
     # <=> 는 NULL끼리도 같다고 보는 비교. 적용 시기가 없는 계열을 찾으려면 필요하다
     cur.execute(
-        f"SELECT series_id FROM price_series WHERE model_id=%s AND {where} "
+        f"SELECT condition_id FROM price_condition WHERE model_id=%s AND {where} "
         "AND effective_from<=>%s AND effective_to<=>%s",
         (mid, *[row[a] for a in SERIES_AXES], row["effective_from"], row["effective_to"]))
     got = cur.fetchone()
     if got:
         # 출처가 빈칸이면 덮어쓰지 않는다. 있던 주소가 빈칸으로 지워지는 것을 막는다.
         # category 는 마지막 본 절로 갱신한다(모델이 절을 옮겨도 계열은 유지 - 고유 키 밖)
-        cur.execute("UPDATE price_series SET first_seen=LEAST(first_seen,%s), "
+        cur.execute("UPDATE price_condition SET first_seen=LEAST(first_seen,%s), "
                     "last_seen=GREATEST(last_seen,%s), "
                     "source_url=IF(%s='', source_url, %s), "
-                    "category=IF(%s='', category, %s) WHERE series_id=%s",
+                    "category=IF(%s='', category, %s) WHERE condition_id=%s",
                     (date, date, row["source_url"], row["source_url"],
                      row["category"], row["category"], got[0]))
         return got[0]
     cols = ", ".join(SERIES_AXES)
     marks = ", ".join(["%s"] * len(SERIES_AXES))
     cur.execute(
-        f"INSERT INTO price_series(model_id,{cols},category,currency,"
+        f"INSERT INTO price_condition(model_id,{cols},category,currency,"
         "effective_from,effective_to,first_seen,last_seen,source_url) "
         f"VALUES(%s,{marks},%s,%s,%s,%s,%s,%s,%s)",
         (mid, *[row[a] for a in SERIES_AXES], row["category"], row["currency"],
@@ -291,7 +291,7 @@ def lookup_series(cur, axes):
     """
     where = " AND ".join(f"s.{a}=%s" for a in SERIES_AXES)
     cur.execute(f"""
-        SELECT s.series_id FROM price_series s
+        SELECT s.condition_id FROM price_condition s
           JOIN model m USING(model_id)
           JOIN provider p USING(provider_id)
          WHERE p.name=%s AND m.name=%s AND {where}
@@ -302,7 +302,7 @@ def lookup_series(cur, axes):
     return got[0] if got else None
 
 
-def load_changes(cur, date, run_id, baselines=None):
+def load_changes(cur, date, baselines=None):
     """그날 변동 기록을 넣는다. 변동 파일이 없으면 아무것도 안 한다.
 
     변동 항목 = diff.compute_row_changes 형식(축 12개 + kind + old_value/new_value/pct/spike).
@@ -310,7 +310,9 @@ def load_changes(cur, date, run_id, baselines=None):
 
     baselines: {제공사: 비교 기준 날짜}. 저장본의 meta.baselines에서 온다.
     run.py는 회사마다 각자의 마지막 성공일과 비교하므로(2026-07-28), 비교 대상
-    실행 번호도 회사별로 달라야 한다.
+    날짜도 회사마다 다를 수 있다.
+
+    ★2026-08-17 4판: 실행 번호가 없어져 비교 대상을 날짜로 바로 적는다.
     """
     path = os.path.join(CHANGE_DIR, f"{date}.json")
     if not os.path.exists(path):
@@ -319,45 +321,32 @@ def load_changes(cur, date, run_id, baselines=None):
     if not changes:
         return 0, []
 
-    cur.execute("SELECT run_id FROM collection_run WHERE run_date<%s "
+    cur.execute("SELECT run_date FROM crawling_run WHERE run_date<%s "
                 "ORDER BY run_date DESC LIMIT 1", (date,))
     got = cur.fetchone()
-    fallback_run = got[0] if got else None
-
-    run_of_date = {}
-
-    def run_id_of(d):
-        """기준 날짜 -> 실행 번호. 같은 날짜를 여러 번 넣었으면 마지막 것."""
-        if d not in run_of_date:
-            cur.execute("SELECT run_id FROM collection_run WHERE run_date=%s "
-                        "ORDER BY run_id DESC LIMIT 1", (d,))
-            g = cur.fetchone()
-            run_of_date[d] = g[0] if g else None
-        return run_of_date[d]
+    fallback_date = got[0].isoformat() if got else None
 
     known = baselines is not None
     n, missing = 0, 0
     bad_base = set()
     for c in changes:
-        sid = lookup_series(cur, db_axes(c))
-        if sid is None:
+        cid = lookup_series(cur, db_axes(c))
+        if cid is None:
             missing += 1     # 계열을 못 찾음. 조용히 버리지 않고 센다
             continue
         base = (baselines or {}).get(c["provider"])
         if base and base >= date:
             bad_base.add(c["provider"])
             base = None
-        if base:
-            prev_run = run_id_of(base)
-        else:
-            prev_run = None if known else fallback_run
+        prev_date = base if base else (None if known else fallback_date)
         old, new, pct = c.get("old_value"), c.get("new_value"), c.get("pct")
         cur.execute(
-            "INSERT INTO price_change(run_id,prev_run_id,series_id,kind,"
-            "old_value,new_value,pct,is_spike) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE kind=VALUES(kind), old_value=VALUES(old_value), "
-            "new_value=VALUES(new_value), pct=VALUES(pct), is_spike=VALUES(is_spike)",
-            (run_id, prev_run, sid, c["kind"],
+            "INSERT INTO price_change(run_date,prev_run_date,condition_id,change_type,"
+            "old_price,new_price,change_pct,is_big_change) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE change_type=VALUES(change_type), "
+            "old_price=VALUES(old_price), new_price=VALUES(new_price), "
+            "change_pct=VALUES(change_pct), is_big_change=VALUES(is_big_change)",
+            (date, prev_date, cid, c["kind"],
              None if old is None else Decimal(str(old)),
              None if new is None else Decimal(str(new)),
              None if pct is None else Decimal(str(round(float(pct), 4))),
@@ -410,30 +399,29 @@ def load(conn, date, source="live"):
     for r in rows:
         per_prov_models.setdefault(r["provider"], set()).add(r["model"])
         per_prov_rows[r["provider"]] += 1
-    models_total = sum(len(v) for v in per_prov_models.values())
+    model_total = sum(len(v) for v in per_prov_models.values())
 
     with conn.cursor() as cur:
         # 같은 날짜 재실행 = 그날 것을 지우고 새로 넣기(JSON 파일 덮어쓰기와 같은 동작).
         # 관측·제공사별 결과·변동은 딸려서 함께 지워진다(ON DELETE CASCADE)
-        cur.execute("DELETE FROM collection_run WHERE run_date=%s AND source=%s",
-                    (date, source))
+        cur.execute("DELETE FROM crawling_run WHERE run_date=%s", (date,))
         cur.execute(
-            "INSERT INTO collection_run(run_date,source,started_at,finished_at,"
-            "git_commit,snapshot_path,models_total,points_total,"
-            "review_required,review_reasons) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO crawling_run(run_date,source,started_at,finished_at,"
+            "git_commit,snapshot_path,model_count,price_count,"
+            "check_needed,check_reasons) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (date, source, snap["generated_at"][:19].replace("T", " "),
              snap["generated_at"][:19].replace("T", " "), git_commit(), path,
-             models_total, len(rows),
+             model_total, len(rows),
              required, " · ".join(reasons)[:500]))
-        run_id = cur.lastrowid
 
         for st in snap.get("status") or []:
             pid = provider_id(cur, st["provider"])
             ok = bool(st.get("ok"))
             cur.execute(
-                "INSERT INTO provider_run(run_id,provider_id,ok,model_count,row_count,"
-                "attempts,warns,error) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
-                (run_id, pid, 1 if ok else 0,
+                "INSERT INTO crawling_run_provider(run_date,provider_id,success,"
+                "model_count,price_count,tries,warnings,error) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (date, pid, 1 if ok else 0,
                  len(per_prov_models.get(st["provider"], ())) if ok else 0,
                  per_prov_rows.get(st["provider"], 0) if ok else 0,
                  st.get("attempts") or 1,
@@ -447,46 +435,46 @@ def load(conn, date, source="live"):
             mkey = (pid, r["model"])
             if mkey not in cache:
                 cache[mkey] = model_id(cur, pid, r["model"], date)
-            sid = series_id(cur, cache[mkey], r, date)
+            cid = condition_id(cur, cache[mkey], r, date)
             # 소수를 문자열로 거쳐 넣는다. 근사값(float)이 그대로 들어가는 것을 막는다
             cur.execute(
-                "INSERT INTO price_point(series_id,run_id,observed_date,value,note) "
-                "VALUES(%s,%s,%s,%s,%s)",
-                (sid, run_id, date, Decimal(str(r["value"])), r["note"]))
+                "INSERT INTO daily_price(condition_id,observed_date,price,note) "
+                "VALUES(%s,%s,%s,%s)",
+                (cid, date, Decimal(str(r["value"])), r["note"]))
 
         # 그날 변동 기록. 계열이 다 만들어진 뒤에 넣는다
-        n_chg, chg_warns = load_changes(cur, date, run_id,
+        n_chg, chg_warns = load_changes(cur, date,
                                         (snap.get("meta") or {}).get("baselines"))
         warns.extend(chg_warns)
 
         # 관측이 하나도 안 남은 계열·모델은 지운다(같은 날짜를 다시 넣으면서 빠진 것)
         cur.execute("""
-            DELETE s FROM price_series s
-              LEFT JOIN price_point  p USING(series_id)
-              LEFT JOIN price_change c USING(series_id)
-             WHERE p.series_id IS NULL AND c.series_id IS NULL""")
+            DELETE s FROM price_condition s
+              LEFT JOIN daily_price  p USING(condition_id)
+              LEFT JOIN price_change c USING(condition_id)
+             WHERE p.condition_id IS NULL AND c.condition_id IS NULL""")
         cur.execute("""
             DELETE m FROM model m
-              LEFT JOIN price_series s USING(model_id)
+              LEFT JOIN price_condition s USING(model_id)
              WHERE s.model_id IS NULL""")
 
         # 처음·마지막 본 날을 관측에서 다시 계산한다
         cur.execute("""
-            UPDATE price_series s
-              JOIN (SELECT series_id, MIN(observed_date) a, MAX(observed_date) b
-                      FROM price_point GROUP BY series_id) t USING(series_id)
+            UPDATE price_condition s
+              JOIN (SELECT condition_id, MIN(observed_date) a, MAX(observed_date) b
+                      FROM daily_price GROUP BY condition_id) t USING(condition_id)
                SET s.first_seen=t.a, s.last_seen=t.b""")
         cur.execute("""
             UPDATE model m
               JOIN (SELECT model_id, MIN(first_seen) a, MAX(last_seen) b
-                      FROM price_series GROUP BY model_id) t USING(model_id)
+                      FROM price_condition GROUP BY model_id) t USING(model_id)
                SET m.first_seen=t.a, m.last_seen=t.b""")
 
-        cur.execute("UPDATE collection_run SET review_required=%s, review_reasons=%s "
-                    "WHERE run_id=%s",
+        cur.execute("UPDATE crawling_run SET check_needed=%s, check_reasons=%s "
+                    "WHERE run_date=%s",
                     (1 if (review.get("required") or warns) else 0,
                      " · ".join(list(review.get("reasons") or []) + warns)[:500],
-                     run_id))
+                     date))
     conn.commit()
     return len(rows), n_chg, warns
 
@@ -514,13 +502,12 @@ def verify_raw(conn, date):
     got = Counter()
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT pr.name, p.value
-              FROM price_point p
-              JOIN price_series s USING(series_id)
+            SELECT pr.name, p.price
+              FROM daily_price p
+              JOIN price_condition s USING(condition_id)
               JOIN model m USING(model_id)
               JOIN provider pr USING(provider_id)
-              JOIN collection_run r USING(run_id)
-             WHERE r.run_date=%s""", (date,))
+             WHERE p.observed_date=%s""", (date,))
         for name, val in cur.fetchall():
             got[(name, val)] += 1
 
@@ -568,9 +555,9 @@ def history(conn):
         cur.execute("""
             SELECT pr.name, m.name, s.tier, s.item, s.effective_from, s.effective_to,
                    s.context_label, s.modality, s.variant, s.cache_ttl, s.region,
-                   p.observed_date, p.value
-              FROM price_point p
-              JOIN price_series s USING(series_id)
+                   p.observed_date, p.price
+              FROM daily_price p
+              JOIN price_condition s USING(condition_id)
               JOIN model m USING(model_id)
               JOIN provider pr USING(provider_id)
              WHERE s.unit='per_1M_tokens' AND s.multiplier=''
@@ -651,13 +638,12 @@ def verify(conn, date):
         cols = ", ".join(f"s.{a}" for a in SERIES_AXES)
         cur.execute(f"""
             SELECT pr.name, m.name, {cols},
-                   s.effective_from, s.effective_to, p.value
-            FROM price_point p
-            JOIN price_series s USING(series_id)
+                   s.effective_from, s.effective_to, p.price
+            FROM daily_price p
+            JOIN price_condition s USING(condition_id)
             JOIN model m USING(model_id)
             JOIN provider pr USING(provider_id)
-            JOIN collection_run r USING(run_id)
-            WHERE r.run_date=%s""", (date,))
+            WHERE p.observed_date=%s""", (date,))
         n = len(SERIES_AXES)
         for row in cur.fetchall():
             key = (*row[:2 + n],
