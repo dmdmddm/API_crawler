@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import fcntl
+import json
 import os
 import sys
 import time
@@ -190,8 +191,60 @@ def in_effect(rows, date_str):
         else:
             _, name_ef, _ = db.split_period(r.model)
             why = "아직 시작 안 함" if (ef or name_ef) else "이미 끝남"
-            dropped.append(f"{r.provider} {r.model} {r.tier} {r.item} ({why})")
+            # [수정 2026-08-17] 문장 하나에서 딕셔너리로. 메일 예고 절이 회사·원문
+            # (note)·예고 여부를 따로 써야 한다(upcoming_notices)
+            dropped.append({
+                "text": f"{r.provider} {r.model} {r.tier} {r.item} ({why})",
+                "provider": r.provider, "note": getattr(r, "note", None),
+                "upcoming": why == "아직 시작 안 함"})
     return keep, dropped
+
+
+UPCOMING_SEEN_PATH = os.path.join(BASE, "data", "upcoming_seen.json")
+
+
+def upcoming_notices(not_yet, offline):
+    """걸러 낸 예고 줄 -> 메일에 실을 회사별 묶음. 반환: [{provider, note, lines, new}]
+
+    [추가 2026-08-17] 예고를 발견하면 DB 에는 안 넣어도 메일에는 싣는다(사용자
+    결정, 명세 = 수집기준_결정항목.md 공통 절). 예고는 시행 날 페이지 구조 변경으로
+    이어질 수 있어 사람이 미리 원문을 보고 수집 코드 수정 필요를 판단해야 한다
+    (실측 = 2026-08-17 DeepSeek 피크 전환 시행 날 표 병합으로 0개 파싱).
+
+    같은 예고로 매일 메일이 오면 안 보게 되므로(2026-07-30 결정) 처음 본 예고만
+    new 로 표시해 발송 사유로 삼고, 본 목록은 upcoming_seen.json 에 남긴다.
+    예고가 페이지에서 내려가면 목록도 지워 재예고 때 다시 알린다.
+    시험 실행은 목록 파일을 건드리지 않는다(정본 격리 규칙).
+    """
+    ups = [m for m in not_yet if m.get("upcoming")]
+    if not ups:
+        if not offline and os.path.exists(UPCOMING_SEEN_PATH):
+            os.remove(UPCOMING_SEEN_PATH)
+        return []
+    groups = {}
+    for m in ups:
+        g = groups.setdefault(m["provider"],
+                              {"provider": m["provider"], "note": None, "lines": 0})
+        g["lines"] += 1
+        if not g["note"] and m.get("note"):
+            g["note"] = m["note"]
+    seen = []
+    if os.path.exists(UPCOMING_SEEN_PATH):
+        try:
+            with open(UPCOMING_SEEN_PATH, encoding="utf-8") as f:
+                seen = json.load(f).get("keys", [])
+        except Exception:
+            seen = []             # 깨진 목록 = 없는 셈. 최악이 메일 한 번 더
+    out = []
+    for p in sorted(groups):
+        g = groups[p]
+        g["new"] = f"{p}|{g['note'] or ''}" not in seen
+        out.append(g)
+    if not offline:
+        keys = sorted(f"{p}|{g['note'] or ''}" for p, g in groups.items())
+        with open(UPCOMING_SEEN_PATH, "w", encoding="utf-8") as f:
+            json.dump({"keys": keys}, f, ensure_ascii=False, indent=1)
+    return out
 
 
 def known_models(date_str):
@@ -417,7 +470,7 @@ def main():
         rows, not_yet = in_effect(rows, date_str)
         if not_yet:
             for m in not_yet:
-                print(f"  [제외] {m}")
+                print(f"  [제외] {m['text']}")
             # 회사별 개수를 거른 뒤 값으로 맞춘다. 안 맞추면 메일·화면·provider_run
             # 이 '12개 받음'이라 적는데 실제로 들어간 것은 11개가 된다
             kept = {}
@@ -426,6 +479,16 @@ def main():
             for s in status:
                 if s.get("ok"):
                     s["count"] = kept.get(s["provider"], 0)
+        # [추가 2026-08-17] 예고 묶음. 못 만들어도 수집을 죽이지 않는다
+        # (2026-08-10 지적과 같은 원칙 - 부가 기능의 예외가 무인 실행을 죽였다)
+        try:
+            upcoming = upcoming_notices(not_yet, offline=args.offline)
+            for u in upcoming:
+                print(f"  [예고] {u['provider']} {u['lines']}줄"
+                      + (" (새 예고)" if u.get("new") else ""))
+        except Exception as e:
+            print(f"[예고] 묶음을 못 만듦({type(e).__name__}) - 예고 없이 진행")
+            upcoming = []
         row_dicts = [r.to_dict() for r in rows]
         failed = [s["provider"] for s in status if not s["ok"]]
 
@@ -585,6 +648,14 @@ def main():
             # 목록 밖에서만 변동이 있는 날에도 메일을 보낸다(2026-08-16 사용자).
             # 구세대·특수 목적 모델의 인하·인상도 알아야 한다 - 옛 규칙은 로그에만 남겼다
             mail_heads.append(f"기본 목록 밖 모델에서 가격이 바뀐 항목이 {other_n}줄 있습니다.")
+        # [추가 2026-08-17] 새 예고 = 발송 사유(사용자 결정). 이어지는 날은 발송
+        # 사유로 안 삼되, 다른 사유로 나가는 메일 본문에는 예고 절이 실린다.
+        # reasons·종료 코드에는 안 넣는다 - 예고는 수집 품질 문제가 아니다
+        new_up = [u["provider"] for u in upcoming if u.get("new")]
+        if new_up:
+            mail_heads.append(f"가격 변동 예고를 새로 발견했습니다"
+                              f" ({', '.join(new_up)}). 본문 예고 절의 원문을 보고"
+                              " 수집 코드 수정이 필요할지 봐 주세요.")
         # 연결 실패와 0개 파싱은 원인도 대응도 달라서 나눠 적는다
         fetch_fail = [s["provider"] for s in status
                       if not s["ok"] and s.get("fail_kind") != "empty"]
@@ -785,7 +856,8 @@ def main():
             #   나는 예외를 못 잡으므로, 그 자리에서 이미 감싸 두었다(2026-08-10 지적).
             _, note = mailer.send(date_str, mail_heads, changes, status, prev_date,
                                   os.path.join(BASE, "public", "index.html"),
-                                  hints=review["reasons"], urls=mail_urls)
+                                  hints=review["reasons"], urls=mail_urls,
+                                  upcoming=upcoming)
             print(f"[메일] {note}")
         elif mail_heads:
             # 시험 실행은 안 보내되, 보냈다면 무엇이 갔을지 보여준다. 문장을 고칠 때

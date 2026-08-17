@@ -11,6 +11,11 @@
 The new prices take effect at 16:00 UTC on August 16, 2026". 같은 모델에 단가가 두 벌
 (피크·오프피크)이 되므로 등급 칸(tier)에 나눠 담는다. 배치 단가를 담는 방식과 같다.
 시행 전까지는 run.py in_effect·db.applies_on 이 effective_from 을 보고 걸러 낸다.
+
+2026-08-17: 피크 전환 시행 날 가격 표가 사양 표와 합쳐지고(행=항목·열=모델)
+시행일 문장이 지워져 0개 파싱이 났다. 시행일 문장이 있으면 예고(_sched_rows),
+없으면 피크·오프피크 표를 상시 정가로 받는다(_tier_rows, effective_from 없음).
+명세 = 수집기준_결정항목.md DeepSeek 결정란 1·2.
 """
 import re
 from bs4 import BeautifulSoup
@@ -65,9 +70,21 @@ class _DeepSeekRows:
         all_rows = [[[c.get_text(" ", strip=True) for c in r.find_all(["th", "td"])]
                      for r in t.find_all("tr")] for t in soup.find_all("table")]
         rows = []
-        rows += self._sched_rows(all_rows, soup)
+        # [수정 2026-08-17] 시행일 문장 유무로 피크 표의 뜻을 가른다. 있으면 예고,
+        # 없으면 상시 정가(2026-08-17 시행 날 문장이 지워진 실측 - 파일 머리 주석)
+        dated = bool(_EFFECTIVE.search(soup.get_text(" ")))
+        if dated:
+            rows += self._sched_rows(all_rows, soup)
+        # [수정 2026-08-17] flat(정가) 표는 첫 성공 표 하나만 받되(옛 break 의미),
+        # 순회는 끝까지 돈다. break 로 끊으면 시행일 문장 없는 피크 표가 flat 표
+        # 뒤에 오는 배치에서 무경고로 버려진다(검증 지적)
+        flat = []
         for tbl in all_rows:
             if _is_scheduled(tbl):
+                if not dated:
+                    rows += self._tier_rows(tbl, soup)
+                continue
+            if flat:
                 continue
             models = None
             for cells in tbl:
@@ -92,13 +109,64 @@ class _DeepSeekRows:
                 for mdl, cell in zip(models, cells[-len(models):]):
                     v = self.price(cell, f"{mdl} {item}")
                     if v is not None:
-                        rows.append(PriceRow(
+                        flat.append(PriceRow(
                             provider=self.provider, model=mdl, item=item,
                             value=v, unit="per_1M_tokens",
                             category="Model Details", source_url=self.url))
-            if rows:
+        return rows + flat
+
+    def _tier_rows(self, tbl, soup):
+        """[추가 2026-08-17] 시행일 문장이 없는 피크·오프피크 표 = 상시 정가.
+
+        2026-08-17 시행과 함께 표가 사양 표에 합쳐졌다(행=항목에 병합 셀,
+        열=모델). 예고와 달리 effective_from 없이 그날 단가로 받는다.
+        행에 항목 라벨이 있으면 그 항목을 기억하고, PEAK·OFF-PEAK 셀이
+        등급이 된다(병합 셀 탓에 라벨 없는 줄이 온다). 값은 뒤에서 모델
+        수만큼 자른다. 시간대 원문은 note 로 남긴다(2026-08-16 규칙 유지)."""
+        models = None
+        for cells in tbl:
+            if cells and cells[0].strip().upper() == "MODEL":
+                models = [re.sub(r"\s*\(.*?\)\s*$", "", c).strip()
+                          for c in cells[1:]]
                 break
-        return rows
+        if not models:
+            self._warns.append(
+                f"{self.provider}: 피크 단가 표에서 모델 행을 못 찾음 - 안 받음")
+            return []
+        # 표 방향이 다시 바뀌어 모델 자리에 항목 제목이 들어오면 잘못 붙이지
+        # 말고 비워서 0개 파싱 알림이 사람을 부르게 한다
+        if any(any(label in m.upper() for label, _ in _COL_ITEM) for m in models):
+            self._warns.append(
+                f"{self.provider}: MODEL 행에 항목 제목이 섞임 - 표 방향 변화 의심, 안 받음")
+            return []
+        hours = _PEAK_HOURS.search(soup.get_text(" "))
+        note = hours.group(0).strip()[:300] if hours else None
+        if not note:
+            self._warns.append(
+                f"{self.provider}: 피크 시간대 문장을 못 찾음 - 어느 시간이 피크인지 안 남음")
+        out, item = [], None
+        for cells in tbl:
+            joined = " ".join(cells).upper()
+            found = next((it for label, it in _COL_ITEM if label in joined), None)
+            if found:
+                item = found
+            tier = next((_PEAK_TIER[c.strip().upper()] for c in cells
+                         if c.strip().upper() in _PEAK_TIER), None)
+            if item is None or (found is None and tier is None):
+                continue
+            if len(cells) < len(models):
+                self._warns.append(
+                    f"{self.provider}: '{cells[0][:30]}' 행 칸 부족 - 건너뜀")
+                continue
+            for mdl, cell in zip(models, cells[-len(models):]):
+                v = self.price(cell, f"{mdl} {tier or ''} {item}")
+                if v is not None:
+                    out.append(PriceRow(
+                        provider=self.provider, model=mdl, item=item,
+                        value=v, unit="per_1M_tokens", tier=tier,
+                        category="Model Details", source_url=self.url,
+                        note=note))
+        return out
 
     def _sched_rows(self, all_rows, soup):
         """시행 예고 표(피크·오프피크) -> 배수 아닌 금액 줄 + effective_from.
@@ -151,3 +219,4 @@ class _DeepSeekRows:
 
 DeepSeekAdapter.parse_rows = _DeepSeekRows.parse_rows
 DeepSeekAdapter._sched_rows = _DeepSeekRows._sched_rows
+DeepSeekAdapter._tier_rows = _DeepSeekRows._tier_rows

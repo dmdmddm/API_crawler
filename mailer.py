@@ -211,7 +211,7 @@ def _kinds_label(items):
 
 
 def build_body(date_str, headlines, changes, status, prev_date, dash_path,
-               urls=None):
+               urls=None, upcoming=None):
     """메일 본문. 첫 줄 = 왜 왔는지, 그다음 변동 내역과 수집 결과.
 
     변동 내역은 **회사별로 묶는다**(2026-08-10 사용자 지시). 줄마다 회사 이름을
@@ -272,6 +272,20 @@ def build_body(date_str, headlines, changes, status, prev_date, dash_path,
             lines.append(f"  ... {len(others) - left}건 더 (대시보드에서 전체 확인)")
         lines.append("")
 
+    if upcoming:
+        # [추가 2026-08-17] 예고는 DB·화면에 없으므로 메일이 유일한 통로다(사용자
+        # 결정, 명세 = 수집기준_결정항목.md 공통 절). 원문을 그대로 실어 받는
+        # 사람이 페이지를 열어 수집 코드 수정 필요를 판단할 근거를 준다
+        lines.append("# 가격 변동 예고 (시행 전 - 오늘 값에는 안 들어감)")
+        for u in upcoming:
+            tag = " - 새 예고" if u.get("new") else ""
+            lines.append(f"  {u['provider']}: 예고 단가 {u['lines']}줄{tag}")
+            if u.get("note"):
+                lines.append(f"    원문: {u['note']}")
+        lines.append("  시행 날 페이지 구조가 같이 바뀔 수 있습니다. 원문 페이지를"
+                     " 열어 수집 코드 수정이 필요할지 봐 주세요.")
+        lines.append("")
+
     ok = [s for s in status if s.get("ok")]
     bad = [s for s in status if not s.get("ok")]
     total = sum(s.get("count") or 0 for s in status)
@@ -319,7 +333,7 @@ def build_subject(date_str, headlines, hints=None):
 
 
 def send(date_str, headlines, changes, status, prev_date, dash_path,
-         hints=None, dry=False, urls=None):
+         hints=None, dry=False, urls=None, upcoming=None):
     """알림 메일 발송. 반환 = (보냈나, 사람이 읽을 결과 한 줄).
 
     예외를 밖으로 올리지 않는다. 메일이 실패해도 그날 수집은 실패가 아니다
@@ -331,13 +345,13 @@ def send(date_str, headlines, changes, status, prev_date, dash_path,
     """
     try:
         return _prepare_and_send(date_str, headlines, changes, status, prev_date,
-                                 dash_path, hints, dry, urls)
+                                 dash_path, hints, dry, urls, upcoming)
     except Exception as e:
         return False, f"예외: {type(e).__name__}: {e}"
 
 
 def _prepare_and_send(date_str, headlines, changes, status, prev_date, dash_path,
-                      hints, dry, urls=None):
+                      hints, dry, urls=None, upcoming=None):
     """설정 읽기 -> 본문 조립 -> 발송. 예외 처리는 send() 가 맡는다."""
     cfg = load_config()
     if not cfg:
@@ -358,7 +372,7 @@ def _prepare_and_send(date_str, headlines, changes, status, prev_date, dash_path
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=cfg["from"].rsplit("@", 1)[-1])
     msg.set_content(build_body(date_str, headlines, changes, status,
-                               prev_date, dash_path, urls))
+                               prev_date, dash_path, urls, upcoming))
 
     if dry:
         print("----- 보내지 않고 내용만 출력 -----")
