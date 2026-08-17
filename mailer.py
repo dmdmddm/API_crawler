@@ -37,7 +37,7 @@ MAX_SUBJECT = 90           # 제목에 쓰는 사유 부분의 길이 상한
 KIND_KO = (("added", "등록"), ("removed", "삭제"), ("changed", "가격 변동"))
 
 
-# ── 화면 기본 노출·알림 대상 모델 (2026-08-16 사용자 확정) ──────────────
+# ── 화면 주요 모델·알림 대상 (2026-08-16 사용자 확정, 이름 = 주요 모델로 통일 08-17) ──
 # 고른 기준 = **회사가 지금 파는 최신 모델 + 그 직전 판**. 실제로 골라 쓸 만한 것만 남긴다.
 #   - 최신만 두면 아직 쓰는 직전 판이 빠진다(Claude Opus 5 를 쓰기 시작해도 4.8 을 계속 쓴다)
 #   - 구세대(gpt-4 이하·gpt-3.5·davinci·babbage·Gemini 2.x·grok-4.20)는 뺀다
@@ -262,7 +262,7 @@ def build_body(date_str, headlines, changes, status, prev_date, dash_path,
         lines.append("")
     if others:
         left = max(MAX_CHANGE_LINES - shown, 0)
-        lines.append(f"# 기본 목록 밖 변동 {len(others)}줄"
+        lines.append(f"# 주요 모델 밖 변동 {len(others)}건"
                      " (구세대·특수 목적 모델. 화면에서는 접힌 표에 있습니다)")
         for c in others[:left]:
             one = _change_line(c)
@@ -279,7 +279,7 @@ def build_body(date_str, headlines, changes, status, prev_date, dash_path,
         lines.append("# 가격 변동 예고 (시행 전 - 오늘 값에는 안 들어감)")
         for u in upcoming:
             tag = " - 새 예고" if u.get("new") else ""
-            lines.append(f"  {u['provider']}: 예고 단가 {u['lines']}줄{tag}")
+            lines.append(f"  {u['provider']}: 예고 단가 {u['lines']}건{tag}")
             if u.get("note"):
                 lines.append(f"    원문: {u['note']}")
         lines.append("  시행 날 페이지 구조가 같이 바뀔 수 있습니다. 원문 페이지를"
@@ -290,7 +290,7 @@ def build_body(date_str, headlines, changes, status, prev_date, dash_path,
     bad = [s for s in status if not s.get("ok")]
     total = sum(s.get("count") or 0 for s in status)
     lines.append("# 수집 결과")
-    lines.append(f"  {len(ok)}개 회사 성공 · 단가 {total}줄")
+    lines.append(f"  {len(ok)}개 회사 성공 · 단가 {total}건")
     lines.append("  " + " · ".join(f"{s['provider']} {s.get('count') or 0}"
                                    for s in status))
     for s in bad:

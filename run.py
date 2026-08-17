@@ -642,7 +642,7 @@ def main():
         if rep_added_models:
             mail_heads.append(f"새로 등록된 모델이 {len(rep_added_models)}개 있습니다.")
         elif any(c["kind"] == "added" for c in rep_changes):
-            mail_heads.append("기존 모델에 새 단가 줄이 생겼습니다.")
+            mail_heads.append("기존 모델에 새 단가가 생겼습니다.")
         other_n = len(changes) - len(rep_changes)
         if other_n and not mail_heads:
             # 목록 밖에서만 변동이 있는 날에도 메일을 보낸다(2026-08-16 사용자).
@@ -714,7 +714,7 @@ def main():
             code |= EXIT_REMOVED
         elif any(c["kind"] == "removed" for c in rep_changes):
             n_rm = sum(1 for c in rep_changes if c["kind"] == "removed")
-            mail_heads.append(f"대표 라인업에서 단가 줄 {n_rm}개가 목록에서 빠졌습니다"
+            mail_heads.append(f"주요 모델에서 단가 {n_rm}건이 목록에서 빠졌습니다"
                               "(모델은 남아 있음 - 등급이나 항목이 없어진 것).")
         warned = [s["provider"] for s in status if s.get("warns")]
         if warned:

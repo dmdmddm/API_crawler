@@ -4,7 +4,7 @@
 외부 리소스 없이 단일 HTML로 완결(사내 웹페이지에 그대로 삽입 가능).
 
 표시 설계(2026-08-15 개정 — 저장본이 값마다 한 줄인 PriceRow 목록으로 바뀜):
-- 회사마다 **기본 노출 모델**(mailer.FEATURED — 최신 판과 그 직전 판)과 오늘 바뀐 줄만
+- 회사마다 **주요 모델**(mailer.FEATURED — 최신 판과 그 직전 판)과 오늘 바뀐 줄만
   펼치고, 나머지(구세대·특수 목적·Flex·Fast mode·Multimodal·Finetuning 등)는 접는다.
 - 표는 (모델 · 등급 · 문맥 구간 · 변형 · 지역) 을 한 행으로 하고 항목(입력·캐시 읽기·
   캐시 쓰기·출력·…)을 열로 편다. 자료형·캐시 기간은 열 이름에 붙인다(음성 입력·5m 캐시 쓰기).
@@ -176,7 +176,7 @@ def _provider_tables(rows, changes):
         rs = by.get(prov)
         if not rs:
             continue
-        # 기본 노출 = FEATURED 목록(mailer) + 오늘 값이 바뀌었거나 처음 등장한 줄.
+        # 주요 모델 = FEATURED 목록(mailer) + 오늘 값이 바뀌었거나 처음 등장한 줄.
         # 뒤 조건이 없으면 목록 밖 모델의 인하·인상이 접힌 표에 묻힌다(2026-08-16 사용자)
         def _show(r):
             return (mailer.is_featured(prov, r["model"], r.get("category"), r.get("tier"))
@@ -185,14 +185,14 @@ def _provider_tables(rows, changes):
         rest = [r for r in rs if not _show(r)]
         url = rs[0].get("source_url") or ""
         title = (f'<h3><span>{_esc(PROVIDER_LABEL.get(prov, prov))} '
-                 f'<span class="cnt">대표 {len(rep)}줄 · 전체 {len(rs)}줄</span></span>'
+                 f'<span class="cnt">주요 모델 {len(rep)}건 (전체 {len(rs)}건)</span></span>'
                  + (f'<a href="{_esc(url)}" target="_blank" rel="noopener">공식 페이지 ↗</a>' if url else "")
                  + "</h3>")
         more = ""
         if rest:
             cats = sorted({r.get("category") or "" for r in rest} - {""})
             hint = ", ".join(cats[:4]) + (" 외" if len(cats) > 4 else "")
-            more = (f'<details class="more"><summary>나머지 {len(rest)}줄 펼치기'
+            more = (f'<details class="more"><summary>나머지 {len(rest)}건 펼치기'
                     f'<span class="hint">{_esc(hint)}</span></summary>{_pivot(rest, cmap)}</details>')
         out.append(f'<div class="card">{title}{_pivot(rep, cmap) if rep else _pivot(rest, cmap)}'
                    f'{more if rep else ""}</div>')
@@ -212,7 +212,7 @@ def _banner(changes, prev_date, date_str=None):
         return ('<div class="banner calm"><span class="dot"></span>'
                 f'직전 수집({_esc(prev_date)}) 대비 가격 변동이 없습니다.</div>')
     return ('<div class="banner alert"><span class="dot"></span>'
-            f'직전 수집({_esc(prev_date)}) 대비 변동 {len(changes)}줄 감지. 아래 변경 이력을 확인하세요.</div>')
+            f'직전 수집({_esc(prev_date)}) 대비 변동 {len(changes)}건 감지. 아래 변경 이력을 확인하세요.</div>')
 
 
 def _feed_order(c):
@@ -238,28 +238,43 @@ def _line_desc(c):
 
 
 MAX_FEED = 60
+# [추가 2026-08-17 사용자] 처음부터 펼쳐 두는 변경 이력 건수. 나머지는 접는다 -
+# 2026-08-17 DeepSeek 요금제 개편 때 30건이 한 번에 나와 화면이 이력으로 찼다.
+# 접히는 쪽이 항상 덜 중요하다: 정렬이 큰 변동 -> 오른 것 -> 내린 것 -> 새로 등록 순
+FEED_OPEN = 5
+
+
+def _feed_item(c):
+    """변동 한 건의 <li>."""
+    spike = ' <span class="pill spike">큰 변동</span>' if c.get("spike") else ""
+    desc = _line_desc(c)
+    prov = f'<span class="prov">{_esc(c["provider"])}</span>'
+    if c["kind"] == "changed":
+        cls = "up" if (c.get("pct") or 0) > 0 else "down"
+        return (f'<li class="{cls}">{prov} · {desc} <span class="old">{_fmt(c["old_value"])}</span> → '
+                f'<span class="new-v">{_fmt(c["new_value"])}</span> {_delta(c.get("pct"))}{spike}</li>')
+    if c["kind"] == "added":
+        return f'<li class="new">{prov} · {desc} 새로 생김 ({_fmt(c["new_value"])})</li>'
+    return f'<li class="rm">{prov} · {desc} 사라짐 (직전 {_fmt(c["old_value"])})</li>'
 
 
 def _feed(changes):
     if not changes:
         return ""
-    items = []
-    for c in sorted(changes, key=_feed_order)[:MAX_FEED]:
-        spike = ' <span class="pill spike">큰 변동</span>' if c.get("spike") else ""
-        desc = _line_desc(c)
-        prov = f'<span class="prov">{_esc(c["provider"])}</span>'
-        if c["kind"] == "changed":
-            cls = "up" if (c.get("pct") or 0) > 0 else "down"
-            items.append(
-                f'<li class="{cls}">{prov} · {desc} <span class="old">{_fmt(c["old_value"])}</span> → '
-                f'<span class="new-v">{_fmt(c["new_value"])}</span> {_delta(c.get("pct"))}{spike}</li>')
-        elif c["kind"] == "added":
-            items.append(f'<li class="new">{prov} · {desc} 새로 생김 ({_fmt(c["new_value"])})</li>')
-        else:
-            items.append(f'<li class="rm">{prov} · {desc} 사라짐 (직전 {_fmt(c["old_value"])})</li>')
-    if len(changes) > MAX_FEED:
-        items.append(f'<li>외 {len(changes) - MAX_FEED}줄 (아래 표와 DB price_change 표에 전부 있음)</li>')
-    return ('<div class="eyebrow section">변경 이력</div><ul class="feed">' + "".join(items) + "</ul>")
+    shown = sorted(changes, key=_feed_order)[:MAX_FEED]
+    items = [_feed_item(c) for c in shown]
+    over = len(changes) - len(shown)          # 상한을 넘어 아예 안 적는 건수
+    head, rest = items[:FEED_OPEN], items[FEED_OPEN:]
+    out = ('<div class="eyebrow section">변경 이력</div>'
+           f'<ul class="feed">{"".join(head)}</ul>')
+    if rest or over:
+        tail = "".join(rest)
+        if over:
+            tail += f'<li>외 {over}건 (아래 표와 DB price_change 표에 전부 있음)</li>'
+        out += (f'<details class="more feed-more">'
+                f'<summary>나머지 {len(rest) + over}건 펼치기</summary>'
+                f'<ul class="feed">{tail}</ul></details>')
+    return out
 
 
 def _status(status):
@@ -267,7 +282,7 @@ def _status(status):
     for s in status:
         if s.get("ok"):
             warn = " ⚠" if s.get("warns") else ""
-            chips.append(f'<span class="chip">{_esc(s["provider"])} <b>{s["count"]}</b>줄{warn}</span>')
+            chips.append(f'<span class="chip">{_esc(s["provider"])} <b>{s["count"]}</b>건{warn}</span>')
         else:
             chips.append(f'<span class="chip err">{_esc(s["provider"])} 수집 실패</span>')
     return ('<div class="eyebrow section">수집 상태</div><div class="status">' + "".join(chips) + "</div>")
@@ -399,6 +414,10 @@ td details[open]>summary::before{transform:rotate(90deg);}
 .extras .ex i{font-style:normal;color:var(--faint);margin-right:4px;}
 /* 접힌 나머지 모델 묶음 */
 details.more{border-top:1px solid var(--line);}
+/* 변경 이력 접기(2026-08-17). 카드 안이 아니라 홀로 놓이므로 테두리를 줄에 맞춘다 */
+details.more.feed-more{border-top:none;margin:0 0 8px;}
+details.more.feed-more>summary{border:1px solid var(--line);border-radius:10px;
+  background:var(--surface);padding:10px 15px;}
 details.more>summary{cursor:pointer;list-style:none;padding:11px 18px;font-size:.83rem;
   color:var(--muted);display:flex;align-items:center;gap:8px;}
 details.more>summary::-webkit-details-marker{display:none;}
@@ -665,8 +684,9 @@ def render_body(date_str, rows, changes, status, prev_date, collected_at=None,
     stamp = collected_at or date_str
     n_prov = len({r["provider"] for r in rows})
     n_model = len({(r["provider"], r["model"]) for r in rows})
-    kpis = (_kpi(n_prov, "제공사") + _kpi(n_model, "모델") + _kpi(len(rows), "단가 줄")
-            + _kpi(len(changes), "변동 줄", hot=bool(changes)))
+    # [수정 2026-08-17 사용자] 단가 줄 수는 위쪽 숫자에서 뺀다(회사별 카드 제목에 남는다)
+    kpis = (_kpi(n_prov, "제공사") + _kpi(n_model, "모델")
+            + _kpi(len(changes), "변동 건수", hot=bool(changes)))
     return (
         f"<style>{CSS}{TREND_CSS}{EXTRA_CSS}</style>"
         f'<div class="wrap">'
@@ -681,8 +701,8 @@ def render_body(date_str, rows, changes, status, prev_date, collected_at=None,
         f"{_provider_tables(rows, changes)}"
         f"{_status(status)}"
         f'<div class="foot">각 제공사 공식 가격 페이지(마크다운 제공 회사는 마크다운)에서 자동 수집한 값입니다. '
-        f"값은 100만 토큰당 미국 달러이고, 다른 단위는 칸 안에 적혀 있습니다. 배수 줄(×0.8 standard 등)은 "
-        f"회사가 금액 없이 배수로만 공지한 요금입니다. 회사마다 대표 라인업만 펼쳐 두었고 나머지 줄은 접혀 있습니다. "
+        f"값은 100만 토큰당 미국 달러이고, 다른 단위는 칸 안에 적혀 있습니다. ×0.8 standard 처럼 적힌 값은 "
+        f"회사가 금액 없이 배수로만 공지한 요금입니다. 회사마다 주요 모델만 펼쳐 두었고 나머지는 접혀 있습니다. "
         f"수집 특성상 페이지 개편 시 일부 값이 누락될 수 있으니, 중요한 판단 전에는 각 카드의 공식 페이지 링크로 확인하세요.</div>"
         f"</div>"
     )
