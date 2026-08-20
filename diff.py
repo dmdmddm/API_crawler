@@ -38,7 +38,7 @@ def _pct(old, new):
 
 
 def _is_spike(old, new):
-    """전날 대비 배수가 임계 이상인가."""
+    """전날 대비 배수가 임계 이상인지 판정."""
     if old is None or new is None:
         return old != new
     if old == 0:

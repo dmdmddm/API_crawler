@@ -47,7 +47,7 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 RETRIES = 3          # 제공사별 재시도 횟수
 RETRY_DELAY = 5      # 재시도 간격(초)
 
-# 아는 모델 목록을 몇 일치까지 볼 것인가. 이보다 오래 안 보인 모델은 목록에서 뺀다.
+# 아는 모델 목록을 거슬러 보는 일수. 이보다 오래 안 보인 모델은 목록에서 뺀다.
 # 목록이 무한히 커지는 것을 막는 자리다. 매일 오는 경고를 멈추는 일은 이 상수가
 # 아니라 missing_models() 의 '안 온 첫날만' 걸러내기가 한다(2026-08-10).
 KNOWN_WINDOW_DAYS = 30

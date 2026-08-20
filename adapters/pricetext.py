@@ -34,7 +34,7 @@ _MODALITY_WORDS = {
     "thinking": "thinking", "reasoning": "thinking",
 }
 
-# 단위를 이루는 조각. (정규식, 이름, 수량을 앞에 받는가)
+# 단위를 이루는 조각. (정규식, 이름, 수량을 앞에 받는지 여부)
 _UNIT_TOKENS = [
     (r"mtoks?\b", "1M_tokens", False),       # MTok 자체가 100만 토큰이라 수량이 안 붙는다
     (r"tokens?\b", "tokens", True),

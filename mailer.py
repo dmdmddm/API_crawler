@@ -70,7 +70,7 @@ FEATURED = {
 
 
 def _in_featured_section(provider, category, tier):
-    """그 회사에서 기본으로 내는 절·등급인가. 모델 이름과 함께 봐야 판정이 끝난다.
+    """그 회사에서 기본으로 내는 절·등급인지 판정. 모델 이름과 함께 봐야 판정이 끝난다.
 
     회사마다 지목이 다르다(수집기준_결정항목.md §category 칸 · 공통 절 "알림 기준",
     2026-08-14/15 사용자). category 는 페이지 절 이름 원문(영어)이라 앞부분 일치로 본다
@@ -100,7 +100,7 @@ def _in_featured_section(provider, category, tier):
 
 
 def is_featured(provider, model, category=None, tier=None):
-    """이 줄을 화면 첫 화면과 메일에 낼 것인가 = 위 FEATURED 목록의 모델인가."""
+    """이 줄을 화면 첫 화면과 메일에 낼지 판정 = 위 FEATURED 목록의 모델인지 여부."""
     names = FEATURED.get(provider)
     if names is not None and model not in names:
         return False

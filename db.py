@@ -11,7 +11,7 @@
 
 구조: 조건(계열)과 값(관측)을 나눠 넣는다.
   price_condition  = "이 모델의 이 조건에서 이 항목" 하나. 조건이 새로 나올 때만 늘어남
-  daily_price   = 그 계열이 그날 얼마였는가. 매일 쌓임
+  daily_price   = 그 계열의 그날 단가. 매일 쌓임
 
 2026-08-15 3판: 저장본이 PriceRow 줄 목록(한 줄 = 값 하나, 축 12개)이 되어 여섯 칸
 순회(FIELD_MAP)를 없애고 줄을 그대로 넣는다. 축에 multiplier 가 들어가고 category 는
@@ -93,7 +93,7 @@ def split_period(name):
 
 
 def applies_on(model_name, date, effective_from=None):
-    """그날 적용되는 단가인가. 아직 시작 안 했거나 이미 끝났으면 False.
+    """그날 적용되는 단가인지 판정. 아직 시작 안 했거나 이미 끝났으면 False.
 
     적용 시기는 어댑터가 effective_from 에 채우거나(DeepSeek 예고 표 · Anthropic 시기 행)
     모델 이름에 붙어 온다('... through August 31, 2026'). 칸이 채워져 있으면 그쪽이
@@ -680,7 +680,7 @@ def set_note(conn, provider, model, note):
 
 
 def stop_open(note):
-    """비고의 마지막 줄이 아직 안 닫힌 '공지되지 않음' 줄인가.
+    """비고의 마지막 줄이 아직 안 닫힌 '공지되지 않음' 줄인지 판정.
 
     닫혔다 = 뒤에 '(날짜부터 다시 공지됨)' 이 붙었다. 끝 공백·줄바꿈은 무시한다.
     """

@@ -23,7 +23,7 @@ from .base import BaseAdapter
 
 # 예고 표의 시간대 라벨 -> 등급 이름
 _PEAK_TIER = {"PEAK": "peak", "OFF-PEAK": "off_peak"}
-# 열 제목 -> 어느 단가인가
+# 열 제목 -> 단가 종류
 _COL_ITEM = (("INPUT TOKENS (CACHE HIT)", "cache_read"),
              ("INPUT TOKENS (CACHE MISS)", "input"),
              ("OUTPUT TOKENS", "output"))
@@ -43,7 +43,7 @@ _MONTHS = {m: i for i, m in enumerate(
 
 
 def _is_scheduled(rows):
-    """시간대별 요금 예고 표인가. 어느 칸이든 PEAK·OFF-PEAK 라벨이 있으면 그 표다."""
+    """시간대별 요금 예고 표인지 판정. 어느 칸이든 PEAK·OFF-PEAK 라벨이 있으면 그 표다."""
     return any(c.strip().upper() in _PEAK_TIER for cells in rows for c in cells)
 
 

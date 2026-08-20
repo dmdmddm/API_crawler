@@ -20,7 +20,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 PAGE_DIR = os.path.join(BASE, "data", "pages")
 EXCERPT_DIR = os.path.join(BASE, "data", "excerpts")
 
-# 모델 이름 앞뒤로 몇 글자를 오려낼 것인가.
+# 모델 이름 앞뒤로 오려낼 글자 수.
 # ★500자인 이유 = 실측(2026-08-10, 6개사 60모델). "조각 안에 그 모델의 표준 입력
 #   단가가 들어 있나"를 반경별로 셌다.
 #     100자 32개 · 200자 35개 · 300자 53개 · 400자 59개 · 500자 60개(전부)

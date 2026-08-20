@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS crawling_run (
   snapshot_path VARCHAR(300) NOT NULL DEFAULT '',
   model_count   SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 실제로 넣은 줄에서 센 모델 수
   price_count   SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- 실제로 넣은 단가 건수(하루 약 1,300)
-  check_needed  TINYINT(1) NOT NULL DEFAULT 0,          -- 사람이 한 번 봐야 하는 날인가
+  check_needed  TINYINT(1) NOT NULL DEFAULT 0,          -- 사람 확인 필요 여부 (1 = 필요)
   check_reasons VARCHAR(500) NOT NULL DEFAULT '',
   PRIMARY KEY (run_date)
 ) ENGINE=InnoDB;
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS crawling_run_provider (
     REFERENCES provider (provider_id)
 ) ENGINE=InnoDB;
 
--- 6. 가격 관측. 계열 하나가 그날 얼마였는가.
+-- 6. 가격 관측. 가격 계열 하나의 그날 단가.
 CREATE TABLE IF NOT EXISTS daily_price (
   condition_id  INT UNSIGNED NOT NULL,             -- 어느 조건 조합(price_condition)
   observed_date DATE NOT NULL,                     -- 관측한 날. crawling_run.run_date 와 같다
