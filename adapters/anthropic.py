@@ -66,7 +66,10 @@ class _AnthropicMd:
         plan = [("Base Input Tokens", "input", ""),
                 ("5m Cache Writes", "cache_write", "5m"),
                 ("1h Cache Writes", "cache_write", "1h"),
-                ("Cache Hits & Refreshes", "cache_read", ""),
+                # 2026-09-04: 열 이름이 'Cache Hits & Refreshes'에서
+                # 'Cache hits and refreshes'로 바뀌어 09-02부터 cache_read 가
+                # 통째로 안 잡혔다. 부분일치 라벨 'Cache hits'는 옛·새 이름 둘 다 잡는다
+                ("Cache hits", "cache_read", ""),
                 ("Output Tokens", "output", "")]
         out = []
         for r in t.rows:

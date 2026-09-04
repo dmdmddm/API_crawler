@@ -49,7 +49,9 @@ def _is_scheduled(rows):
 
 class DeepSeekAdapter(BaseAdapter):
     provider = "DeepSeek"
-    url = "https://api-docs.deepseek.com/quick_start/pricing"
+    # 2026-09-04: 끝 슬래시 없는 주소가 문서 홈을 주도록 바뀌어 0개 파싱이 났다.
+    # 슬래시를 붙이면 가격 페이지가 온다(라이브 실측). 리다이렉트는 없다.
+    url = "https://api-docs.deepseek.com/quick_start/pricing/"
     # 이 페이지의 단가는 전부 100만 토큰당이다. 다른 단위가 나오면 표가 바뀐 것
     accepted_units = ("per_1M_tokens",)
 
