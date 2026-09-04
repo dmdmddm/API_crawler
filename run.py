@@ -379,6 +379,33 @@ def removed_models(changes, row_dicts):
     return sorted(gone - today)
 
 
+def items_gone(prev_rows, row_dicts, failed):
+    """[추가 2026-09-04] 전날 있던 (제공사, 항목) 조합이 오늘 0줄로 떨어진 것.
+    실패한 제공사는 뺀다. 반환: {제공사: [사라진 항목]}.
+
+    항목 하나가 통째로 빠져도 그 모델의 다른 항목(input·output 등)이 남으면 모델은
+    살아 있어 removed_models 에 안 걸린다. 2026-09-04 실측: Anthropic 캐시 읽기 열
+    이름이 'Cache Hits & Refreshes'에서 'Cache hits and refreshes'로 바뀌어
+    cache_read 가 09-02부터 3일간 조용히 빠졌는데, 모델이 남아 종료 코드가 안
+    올라갔다. (제공사, 항목) 단위로 전날 대비 0을 잡아 같은 유형을 첫날에 사람이
+    보게 한다. 전날 없던 항목은 대상이 아니라 회사가 원래 안 주는 항목을 오해하지 않는다.
+    한 번 사라지면 다음 기준선에는 그 항목이 없어 같은 알림이 반복되지 않는다."""
+    def by_item(rows):
+        c = {}
+        for r in rows:
+            key = (r["provider"], r["item"])
+            c[key] = c.get(key, 0) + 1
+        return c
+    prev_c, curr_c = by_item(prev_rows), by_item(row_dicts)
+    gone = {}
+    for prov, item in prev_c:
+        if prov in failed:
+            continue
+        if curr_c.get((prov, item), 0) == 0:
+            gone.setdefault(prov, []).append(item)
+    return {p: sorted(v) for p, v in gone.items()}
+
+
 def notify(date_str, changes, summary, prev_date, review, prev_by_provider=None):
     """알림 훅. 지금은 콘솔 출력. 이메일/슬랙/웹훅은 여기에 연결.
 
@@ -560,6 +587,9 @@ def main():
         # 사라짐 판정은 모델 단위(오늘 줄이 하나도 없는 모델). 등급 하나가 없어진 것 같은
         # 줄 단위 삭제는 변동 목록·메일 본문에 '사라짐' 줄로만 남고 종료 코드는 안 올린다
         removed = [] if args.offline else removed_models(changes, row_dicts)
+        # [추가 2026-09-04] 항목이 통째로 빠진 것(모델은 남음)을 기준선과 대조. 시험
+        # 실행은 기준선이 고정 날짜라 오탐이 나므로 건너뛴다(removed 와 같은 이유)
+        gone_items = {} if args.offline else items_gone(prev_rows, row_dicts, set(failed))
         suspect, page_errs = {}, []
         if not args.offline:
             try:
@@ -716,6 +746,18 @@ def main():
             n_rm = sum(1 for c in rep_changes if c["kind"] == "removed")
             mail_heads.append(f"주요 모델에서 단가 {n_rm}건이 목록에서 빠졌습니다"
                               "(모델은 남아 있음 - 등급이나 항목이 없어진 것).")
+        # [추가 2026-09-04] 항목 하나가 통째로 사라진 것은 모델 사라짐과 따로 알린다.
+        # 모델이 남아 removed 에 안 걸리고 등급·항목 삭제 문장에 묻혀 3일 지나간 전례
+        # (Anthropic cache_read)가 있어, 별도 사유·메일 머리줄로 올리고 종료 코드를 세운다.
+        # EXIT_WARN 은 '항목 누락'을 이미 뜻으로 갖고 있다(상단 상수 주석).
+        if gone_items:
+            bits = [f"{p}: {', '.join(v)}" for p, v in sorted(gone_items.items())]
+            reasons.append("전날 있던 항목이 통째로 사라짐 - " + " / ".join(bits))
+            mail_heads.append("어제까지 있던 단가 항목이 오늘 통째로 빠졌습니다 - "
+                              + " / ".join(bits) + ". 회사가 그 항목을 내렸거나 수집 "
+                              "코드가 페이지 구조 변경을 못 따라간 것으로 보입니다. "
+                              "회사 페이지를 확인해 주세요.")
+            code |= EXIT_WARN
         warned = [s["provider"] for s in status if s.get("warns")]
         if warned:
             reasons.append(f"경고: {', '.join(warned)}")
