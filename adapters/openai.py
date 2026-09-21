@@ -165,6 +165,21 @@ class _OpenAIMd:
                                         value=got[0], unit=got[1], tier=tier,
                                         note=r[uc] if uc is not None else ""))
             return out
+        # 음성 세션 표: 'Model'·'Price per minute' 두 열. gpt-live-1 은 분당 요금이라 unit per_minute
+        if t.col("Price per minute") is not None:
+            t.used = True
+            ci = t.col("Price per minute")
+            im = t.col("Model") or 0
+            out = []
+            for r in t.rows:
+                if ci >= len(r) or im >= len(r):
+                    continue
+                got = self._money(r[ci], default_unit="per_minute")
+                if got:
+                    out.append(_row(area, model=r[im], item="session",
+                                    value=got[0], unit=got[1], tier=tier,
+                                    modality="audio", note=r[ci]))
+            return out
         return []
 
     def _tools(self, t, area):
