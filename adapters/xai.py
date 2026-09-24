@@ -32,6 +32,8 @@ class _XaiMd:
             sec = t.section
             if t.col("Input / 1M tokens") is not None:
                 rows += self._text_api(t)
+            elif "Grok 4.7 Fast" in sec and t.col("Input") is not None:
+                rows += self._fast(t, sec)
             elif sec == "Imagine Pricing" and t.col("Cost") is not None:
                 rows += self._per_unit(t, "Imagine Pricing", "generation")
             elif sec == "Voice Pricing" and t.col("Cost") is not None:
@@ -80,6 +82,31 @@ class _XaiMd:
                         value=got[0], unit=got[1], context=ctx,
                         category="Text API Pricing", source_url=_MD_URL,
                         note=note))
+        return out
+
+    def _fast(self, t, sec):
+        """Grok 4.7 Fast(Cursor·Grok Build 전용, 공개 xAI API 밖). 문맥 구간이 행
+        (Below/Above 200k), 모델은 절 제목. 모델 이름으로 표준 단가와 구분한다."""
+        t.used = True
+        out = []
+        plan = [("Input", "input"), ("Cached input", "cache_read"),
+                ("Output", "output")]
+        for r in t.rows:
+            span = r[0]
+            ctx = ("short" if "below" in span.lower() else
+                   "long" if "above" in span.lower() else "default")
+            for col, item in plan:
+                ci = t.col(col)
+                if ci is None or ci >= len(r):
+                    continue
+                got = self._one(r[ci])
+                if got:
+                    out.append(PriceRow(
+                        provider=self.provider, model="Grok 4.7 Fast", item=item,
+                        value=got[0], unit=got[1], context=ctx,
+                        category="Grok 4.7 Fast pricing", source_url=_MD_URL,
+                        note=f"{span} · Cursor and Grok Build only; "
+                             f"not on public xAI API"))
         return out
 
     def _per_unit(self, t, category, item):
@@ -209,6 +236,6 @@ class _XaiMd:
 
 
 GrokAdapter.md_url = _MD_URL
-for _n in ("parse_rows", "_one", "_text_api", "_per_unit", "_voice",
+for _n in ("parse_rows", "_one", "_text_api", "_fast", "_per_unit", "_voice",
            "_tools", "_files", "_multiplier_rows"):
     setattr(GrokAdapter, _n, getattr(_XaiMd, _n))
