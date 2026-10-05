@@ -67,12 +67,12 @@ class _OpenAIMd:
         self._warns += _md.leftover_money_warnings(self.provider, tables)
         return rows
 
-    # 등급 이름: '### Standard pricing data' -> standard. Fast 는 페이지 말이
-    # 'Fast mode'라 fast 로 줄인다(Priority 에서 개명된 것, 2026-07-30)
+    # 등급 이름 = 절 제목의 첫 낱말(예: '### Ultrafast pricing data'의 ultrafast)
+    # 허용 목록 밖의 이름은 빈 문자열이고 호출하는 쪽이 standard로 처리
     @staticmethod
     def _tier_of(t):
         w = (t.section.split() or ["standard"])[0].lower()
-        return w if w in ("standard", "batch", "flex", "fast") else ""
+        return w if w in ("standard", "batch", "flex", "fast", "ultrafast") else ""
 
     @staticmethod
     def _model_of(cell):
@@ -209,7 +209,8 @@ class _OpenAIMd:
         if cm is None or t.col("Input") is None:
             return []
         t.used = True
-        tier = "fast" if t.label == "Fast mode" else "standard"
+        # fast 등급 탭 이름: 'Fast mode' 또는 'Fast'
+        tier = "fast" if t.label in ("Fast mode", "Fast") else "standard"
         out = []
         plan = [(t.col("Input"), "input"), (t.col("Cached input"), "cache_read"),
                 (t.col("Output"), "output")]

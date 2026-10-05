@@ -1,7 +1,7 @@
 """Perplexity(Sonar) 공식 마크다운 가격 페이지 수집 코드.
 
 명세 = 수집기준_결정항목.md Perplexity 절.
-받을 절 4개만 화이트리스트(Cost Examples = 예시 계산 함정, Gateway = 별도 페이지
+받을 절 5개만 화이트리스트(Cost Examples = 예시 계산 함정, Gateway = 별도 페이지
 안 받기로). 페이지 안 계산기 JSON('단일 정본'이라 자칭)과 표를 맞대 공짜 교차검증.
 """
 from .base import BaseAdapter
@@ -12,6 +12,7 @@ class PerplexityAdapter(BaseAdapter):
     url = "https://docs.perplexity.ai/docs/getting-started/pricing"  # 2026-07-25 리다이렉트 최종 주소로 갱신
 
 import json as _json
+import re as _re
 
 from . import mdtable as _md
 from .base import PriceRow
@@ -25,9 +26,11 @@ class _PerplexityMd:
     def parse_rows(self, text):
         tables = _md.parse_tables(text)
         rows = []
+        sonar_table = False
         for t in tables:
             path = " / ".join(t.headings)
             if "Sonar API" in path:
+                sonar_table = True
                 rows += self._sonar(t)
             elif "Agent API" in path or "Tool Pricing" in path:
                 rows += self._agent_tools(t)
@@ -35,12 +38,14 @@ class _PerplexityMd:
                 rows += self._search_api(t)
             elif "Embeddings" in path:
                 rows += self._embeddings(t)
+            elif "Decisions API" in path:
+                rows += self._decisions(t)
         rows, dup = _md.dedupe_rows(rows, self.provider)
         self._warns += dup
         self._warns += _md.leftover_money_warnings(
             self.provider, tables,
             ignore=("Cost Examples", "Estimate", "Gateway"))
-        self._warns += self._json_crosscheck(text, rows)
+        self._warns += self._json_crosscheck(text, rows, sonar_table)
         return rows
 
     def _one(self, cell, default_unit="per_1M_tokens"):
@@ -158,7 +163,35 @@ class _PerplexityMd:
                     note=note))
         return out
 
-    def _json_crosscheck(self, text, rows):
+    # Decisions API 표: 입력 토큰 단가와 출력 토큰 단가
+    # 출력 칸 'Free'는 금액이 아니라 건너뜀
+    # 읽지 않는 칸에 금액이 생기면 항목과 단위를 정하지 않은 값이라 경고
+    def _decisions(self, t):
+        ci = t.col("Price")
+        if ci is None:
+            return []
+        t.used = True
+        out = []
+        co = t.col("Output")
+        read_cols = {0, ci, co}
+        for r in t.rows:
+            for col, item in ((ci, "input"), (co, "output")):
+                if col is None or col >= len(r):
+                    continue
+                got = self._one(r[col])
+                if got:
+                    out.append(PriceRow(
+                        provider=self.provider, model=r[0], item=item,
+                        value=got[0], unit=got[1],
+                        category="Decisions API Pricing", source_url=_MD_URL))
+            for j, cell in enumerate(r):
+                if j not in read_cols and _md.MONEY.search(cell):
+                    head = t.header[j] if j < len(t.header) else ""
+                    self._warns.append(f"{self.provider}: Decisions API 표의 읽지 않는 "
+                                       f"칸에 금액 존재 - {r[0]} '{head}': {cell[:50]}")
+        return out
+
+    def _json_crosscheck(self, text, rows, sonar_table=True):
         """페이지 안 계산기 JSON('단일 정본' 자칭)과 표 값 맞대기. 저장은 표 값
         (2026-08-15 명세), JSON 은 대조 전용 — 어긋나면 경고만."""
         i = text.find("const PRICING = {")
@@ -190,8 +223,12 @@ class _PerplexityMd:
                 if "dim" not in key.lower():
                     yield float(o)
 
-        json_vals = {v for v in leaves(data.get("sonar", {}))} \
-            | {v for v in leaves(data.get("embeddings", {}))}
+        # 대조 대상: 계산기 데이터의 embeddings 값과 sonar 값
+        # sonar 값은 Sonar 표를 읽었거나 Sonar로 시작하는 제목이 있는 날에만 대조
+        # Sonar 가격표가 지워진 뒤에도 계산기 데이터에는 sonar 단가가 남아 있음
+        json_vals = {v for v in leaves(data.get("embeddings", {}))}
+        if sonar_table or _re.search(r"(?mi)^#+\s*Sonar\b", text):
+            json_vals |= {v for v in leaves(data.get("sonar", {}))}
         table_vals = {r.value for r in rows}
         missing = sorted(v for v in json_vals if v not in table_vals)
         if missing:
@@ -202,5 +239,5 @@ class _PerplexityMd:
 
 PerplexityAdapter.md_url = _MD_URL
 for _n in ("parse_rows", "_one", "_sonar", "_agent_tools", "_search_api",
-           "_embeddings", "_json_crosscheck"):
+           "_embeddings", "_decisions", "_json_crosscheck"):
     setattr(PerplexityAdapter, _n, getattr(_PerplexityMd, _n))
