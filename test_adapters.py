@@ -65,6 +65,16 @@ def test_parse_prices():
                                               [(0.15, "per_1M_tokens", None)]),
         ("$0.10 / GB-day after 1 GB free per account per month",
                                               [(0.1, "per_GB_per_day", None)]),
+        # 수량과 단위 사이 꾸밈말, 괄호 밖 'for' 뒤 설명 (Google Grounding 행)
+        ("1,500 RPD (free), then $35 / 1,000 grounded prompts",
+                                              [(35, "per_1K_prompt", None)]),
+        ("5,000 requests per month (free), then $14 / 1,000 search queries.",
+                                              [(14, "per_1K_request", None)]),
+        ("then $14 per 1,000 requests for text and image-based grounding.",
+                                              [(14, "per_1K_request", None)]),
+        ("$5 per 1,000 requests (for batch)", [(5, "per_1K_request", None)]),
+        ("$5 for each 1,000 calls",           [(5, "per_1K_call", None)]),
+        ("$3 / 1M prompt tokens",             [(3, "per_1M_tokens", None)]),
         # 값이 아닌 것
         ("$1.25 (20% off)",                   [(1.25, "per_1M_tokens", None)]),
         ("200K tokens",                       []),
@@ -140,5 +150,51 @@ def test_rows_all():
     print(f"===== 새 경로 6개사: 합계 {total}줄")
 
 
+# 페이지 형식이 바뀌었을 때 값을 조용히 버리지 않고 경고하는지 (만든 마크다운 조각)
+def test_format_guards():
+    from adapters.openai import OpenAIAdapter
+    from adapters.google import GeminiAdapter
+
+    def warns_of(cls, text):
+        ad = cls()
+        rows, warns = ad.run_rows(text=text)
+        return rows, warns
+
+    ctx_head = ("| Model | Short context input | Short context 1d write | Regional uplift |\n"
+                "| --- | --- | --- | --- |\n| m1 | $1.00 | $2.00 | $3.00 |\n")
+    new_area = ("\n  \n\nGenomics\n\n\n### Grouped Pricing Table data\n\n"
+                "| Model | Input | Output | Cached input |\n| --- | --- | --- | --- |\n"
+                "| m2 | $5.00 | $25.00 | $0.50 |\n")
+    text = "Flagship models\n\n### Standard pricing data\n\n" + ctx_head + new_area
+    rows, warns = warns_of(OpenAIAdapter, text)
+    cases = [
+        ("OpenAI 모르는 문맥 열 경고", any("모르는 열 이름" in w and "1d write" in w for w in warns)),
+        ("OpenAI 문맥 없는 금액 열 경고", any("모르는 열 이름" in w and "Regional uplift" in w for w in warns)),
+        ("OpenAI 모르는 구역 이름 경고", any("모르는 구역 이름" in w and "Genomics" in w for w in warns)),
+        ("OpenAI 새 구역 표를 앞 구역으로 받지 않음", not any(r.model == "m2" for r in rows)),
+        ("OpenAI 새 구역 표 금액 경고", any("못 알아본 표" in w for w in warns)),
+    ]
+    plain = ("Flagship models\n\n### Standard pricing data\n\n"
+             "| Model | Input | Output | Cache write 1hr |\n| --- | --- | --- | --- |\n"
+             "| m3 | $1.00 | $4.00 | $2.00 |\n")
+    rows, warns = warns_of(OpenAIAdapter, plain)
+    cases += [
+        ("OpenAI 보관 시간을 못 읽은 쓰기 열 경고", any("모르는 열 이름" in w and "1hr" in w for w in warns)),
+        ("OpenAI 보관 시간을 못 읽은 쓰기 열은 저장 안 함", not any(r.item == "cache_write" for r in rows)),
+    ]
+    gtext = ("## Pricing for tools\n\n|   | Free Tier | Paid Tier, per 1M tokens in USD |\n|---|---|---|\n"
+             "| Google Search | x | Gemini 2.5 models: Then $35 / 1,000 grounded prompts "
+             "Gemini 3 series: then $14 per 1,000 requests. |\n")
+    rows, warns = warns_of(GeminiAdapter, gtext)
+    cases += [
+        ("Google 모르는 계열 머리 경고", any("모르는 모델 계열 표기" in w for w in warns)),
+        ("Google 한 계열 글 금액 여럿 경고", any("금액 여럿" in w for w in warns)),
+    ]
+    fails = [name for name, ok in cases if not ok]
+    assert not fails, f"형식 변경 경고 시험 실패 {fails}"
+    print(f"===== 형식 변경 경고 시험 {len(cases)}건 전부 통과")
+
+
 test_parse_prices()
 test_rows_all()
+test_format_guards()

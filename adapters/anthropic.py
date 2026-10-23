@@ -20,6 +20,15 @@ from .pricetext import parse_prices as _pp
 _MD_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 # 이름 뒤 괄호 단서: (retired, ...) · (limited availability) -> 떼서 note 로
 _NAME_TAIL = re.compile(r"\s*\(([^)]*)\)\s*$")
+# 이름 뒤 괄호의 프롬프트 길이 구간: (for prompts up to N tokens) = short, (for prompts over N tokens) = long
+_CTX_TAIL = re.compile(r"for prompts (up to|over) [\d,]+ tokens", re.I)
+
+
+def _ctx_of(tail):
+    m = _CTX_TAIL.search(tail)
+    if not m:
+        return "default"
+    return "short" if m.group(1).lower() == "up to" else "long"
 
 
 class _AnthropicMd:
@@ -83,6 +92,7 @@ class _AnthropicMd:
                     out.append(PriceRow(
                         provider=self.provider, model=model, item=item,
                         value=got[0], unit=got[1], cache_ttl=ttl,
+                        context=_ctx_of(tail),
                         category="Model pricing", source_url=_MD_URL, note=tail))
         return out
 
@@ -103,6 +113,7 @@ class _AnthropicMd:
                         out.append(PriceRow(
                             provider=self.provider, model=model, item=item,
                             value=got[0], unit=got[1], tier=tier,
+                            context=_ctx_of(tail),
                             category=category, source_url=_MD_URL, note=tail))
         return out
 

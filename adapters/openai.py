@@ -20,12 +20,48 @@ from .base import PriceRow
 from .pricetext import parse_prices as _pp
 
 _MD_URL = "https://developers.openai.com/api/docs/pricing.md"
-_AREAS = ("Flagship models", "Cyber models", "Multimodal models",
-          "Tools", "Specialized models", "Finetuning")
+_AREAS = ("Flagship models", "Cyber models", "Life sciences models",
+          "Multimodal models", "Tools", "Specialized models", "Finetuning")
 # 모델 이름 뒤 문맥 한정 꼬리. 떼서 note 로 (같은 모델이 두 이름으로 갈라지지 않게)
 _CTX_TAIL = re.compile(r"\s*\((<\s*\d+K? context length)\)\s*$")
 # 컨테이너 요금 칸의 'N GB $값' 짝
 _GB_PAIR = re.compile(r"(\d+)\s*GB\s*\$\s*([\d.]+)")
+# 구역처럼 보이는 줄과, 구역이 아닌 하위 제목(Multimodal 안의 묶음 이름 등)
+_AREA_LIKE = re.compile(r"^[A-Z][A-Za-z ]* models$")
+_SUB_HEADINGS = ("Our latest models", "Realtime and audio generation models",
+                 "Image generation models", "Transcription models",
+                 "Video generation models", "GPT-Live sessions", "Cloud platforms",
+                 "Standard", "Batch", "Flex", "Fast", "Ultrafast")
+# Flagship·Cyber 의 등급별 표 절 이름
+_PRICING_DATA = re.compile(r"\b(?:standard|batch|flex|fast|ultrafast) pricing data\b", re.I)
+
+
+# 표의 i 번째 열에 금액 칸이 하나라도 있는지
+def _money_col(t, i):
+    return any(i < len(r) and _md.MONEY.search(r[i]) for r in t.rows)
+# 캐시 쓰기 열의 보관 시간('Short context 30m write' 의 30m)
+_TTL_WRITE = re.compile(r"(\d+)\s*(m|h)\s*write")
+# Flagship·Cyber 구역에서 문맥 열 없이 'Input, Output, Cached input' 만 있는 표의 문맥 구간
+_PLAIN_CONTEXT = "default"
+
+
+# 열 이름(소문자) -> (item, cache_ttl). 항목 열이 아니면 None
+def _item_of(low):
+    if "cached input" in low:
+        return "cache_read", ""
+    m = _TTL_WRITE.search(low)
+    if m:
+        return "cache_write", m.group(1) + m.group(2)
+    # 보관 시간 표기를 못 읽은 쓰기 열('Cache write 1hr' 등)은 모르는 열로 둠
+    if "write" in low and re.search(r"\d", low):
+        return None
+    if "cache write" in low:
+        return "cache_write", ""
+    if "input" in low:
+        return "input", ""
+    if "output" in low:
+        return "output", ""
+    return None
 
 
 def _row(area, **kw):
@@ -41,6 +77,19 @@ class _OpenAIMd:
         tables = _md.parse_tables(text)
         marks = [(i, ln.strip()) for i, ln in enumerate(text.split("\n"), 1)
                  if ln.strip() in _AREAS]
+        # 구역 목록에도 하위 제목 목록에도 없는 제목 줄 = 새 구역일 수 있음
+        # 제목 줄 = 'OO models' 꼴이거나, 빈 줄과 공백 줄 뒤에 맨 앞 칸부터 쓰이고 빈 줄 둘이 따르는 짧은 줄
+        lines = text.split("\n")
+        for i, ln in enumerate(lines):
+            name = ln.strip()
+            if not name or name in _AREAS or name in _SUB_HEADINGS:
+                continue
+            heading_like = (ln == name and len(name) < 60 and name[0] not in " |#<>-*`[$"
+                            and lines[max(0, i - 3):i] == ["", lines[i - 2], ""]
+                            and lines[i - 2] != "" and not lines[i - 2].strip()
+                            and lines[i + 1:i + 3] == ["", ""])
+            if _AREA_LIKE.match(name) or heading_like:
+                self._warns.append(f"{self.provider}: 모르는 구역 이름 - '{name}'")
 
         def area_of(t):
             a = ""
@@ -54,6 +103,9 @@ class _OpenAIMd:
             a = area_of(t)
             if a in ("Flagship models", "Cyber models"):
                 rows += self._ctx_table(t, a)
+            elif a == "Life sciences models":
+                # 문맥 구간 선택이 없는 구역
+                rows += self._ctx_table(t, a, plain_ctx="default")
             elif a == "Multimodal models":
                 rows += self._multimodal(t, a)
             elif a == "Tools":
@@ -86,21 +138,31 @@ class _OpenAIMd:
         vals = _pp(cell, default_unit=default_unit)
         return (vals[0].value, vals[0].unit) if vals else None
 
-    def _ctx_table(self, t, area):
-        """Flagship·Cyber: 열 이름에 short/long 문맥 + 항목이 같이 있는 8열 표."""
-        cols = []
+    def _ctx_table(self, t, area, plain_ctx=None):
+        """Flagship·Cyber: 열 이름에 short/long 문맥 + 항목이 같이 있는 표."""
+        ctx_of = {}
         for i, h in enumerate(t.header[1:], 1):
             low = h.lower()
-            ctx = "short" if "short context" in low else (
-                  "long" if "long context" in low else None)
-            if ctx is None:
-                continue
-            item = ("cache_read" if "cached input" in low else
-                    "cache_write" if "cache write" in low else
-                    "input" if "input" in low else
-                    "output" if "output" in low else None)
-            if item:
-                cols.append((i, ctx, item))
+            ctx_of[i] = ("short" if "short context" in low else
+                         "long" if "long context" in low else None)
+        cols = []
+        if any(ctx_of.values()):
+            for i, h in enumerate(t.header[1:], 1):
+                got = _item_of(h.lower()) if ctx_of[i] else None
+                if got:
+                    cols.append((i, ctx_of[i]) + got)
+                elif _money_col(t, i):
+                    self._warns.append(f"{self.provider}: 모르는 열 이름 - 절 '{t.section}' 열 '{h}'")
+        # 문맥 열 없이 'Model, Input, Output, Cached input' 만 있는 표.
+        # Flagship·Cyber 에서는 등급별 'OO pricing data' 절 아래 표만(새 구역 표를 앞 구역으로 집지 않게)
+        elif (t.col("Model") == 0 and t.col("Input") is not None
+              and (plain_ctx or _PRICING_DATA.search(" > ".join(t.headings)))):
+            for i, h in enumerate(t.header[1:], 1):
+                got = _item_of(h.lower())
+                if got:
+                    cols.append((i, plain_ctx or _PLAIN_CONTEXT) + got)
+                elif _money_col(t, i):
+                    self._warns.append(f"{self.provider}: 모르는 열 이름 - 절 '{t.section}' 열 '{h}'")
         if not cols:
             return []
         t.used = True
@@ -108,14 +170,14 @@ class _OpenAIMd:
         out = []
         for r in t.rows:
             model, tail = self._model_of(r[0])
-            for i, ctx, item in cols:
+            for i, ctx, item, ttl in cols:
                 if i >= len(r):
                     continue
                 got = self._money(r[i])
                 if got:
                     out.append(_row(area, model=model, item=item, value=got[0],
                                     unit=got[1], tier=tier, context=ctx,
-                                    note=tail))
+                                    cache_ttl=ttl, note=tail))
         return out
 
     def _multimodal(self, t, area):

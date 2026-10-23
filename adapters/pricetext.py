@@ -48,6 +48,7 @@ _UNIT_TOKENS = [
     (r"days?\b", "day", True),
     (r"months?\b", "month", True),
     (r"requests?\b|queries\b|query\b", "request", True),
+    (r"prompts?\b(?!\s+tokens?\b)", "prompt", True),     # 'prompt tokens'의 prompt 는 꾸밈말
     (r"calls?\b|invocations?\b", "call", True),
     (r"sessions?\b", "session", True),
     (r"songs?\b", "song", True),
@@ -61,6 +62,7 @@ _UNIT_TOKENS = [
 _AMOUNT = re.compile(r"\$\s*([0-9]+(?:[.,][0-9]+)*)")
 # 수량 접두: 1,000,000 / 1M / 1K / 1000
 _QTY = re.compile(r"(?:^|[^0-9])([0-9][0-9,\.]*\s*[MK]?)\s*$", re.I)
+_QUALIFIER = re.compile(r"(?<=\d)\s+(?:grounded|search)\s+$")
 _SKIP_TEXT = {"", "-", "—", "n/a", "not available", "free of charge", "free",
               "included", "no charge", "not applicable"}
 
@@ -125,6 +127,8 @@ def _parse_unit(tail):
     parts = []
     pos = 0
     low = re.sub(r"\([^)]*\)", " ", tail).lower()
+    # 괄호 밖 'for' 뒤 = 적용 대상 설명('per 1,000 requests for text and image-based grounding')
+    low = re.split(r"\bfor\b(?!\s+each\b)", low, maxsplit=1)[0]
     while pos < len(low):
         best = None
         for pat, word, takes_qty in _UNIT_TOKENS:
@@ -137,12 +141,14 @@ def _parse_unit(tail):
         # 단위 단어 앞에 'per' 나 '/' 가 있어야 단위로 인정한다.
         # (괄호 안에 단독으로 있는 'image'는 단위가 아니라 자료형)
         before = low[pos:m.start()]
-        if not re.search(r"(per|/|each)\s*[0-9,\.\sMKmk]*$", before) and not parts:
+        # 수량과 단위 단어 사이의 꾸밈말 하나('1,000 grounded prompts', '1,000 search queries')
+        before_qty = _QUALIFIER.sub("", before)
+        if not re.search(r"(per|/|each)\s*[0-9,\.\sMKmk]*$", before_qty) and not parts:
             pos = m.end()
             continue
         qty = None
         if takes_qty:
-            q = _QTY.search(before)
+            q = _QTY.search(before_qty)
             if q:
                 qty = _norm_qty(q.group(1))
         parts.append(_qty_label(qty, word))

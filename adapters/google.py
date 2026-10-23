@@ -57,6 +57,24 @@ _G_ROW_ITEMS = [
 ]
 
 
+# 도구 표 칸 안의 모델 계열 머리. 'Gemini 3 models:'와 'Gemini 3 and newer models:'는 같은 계열
+_FAMILY = re.compile(r"(Gemini \d+(?:\.\d+)?)(?:\.x|\+)?(?:\s*\(?and newer\)?)? models:")
+# 계열 머리처럼 보이는 글 전부(위 정규식이 놓친 표기를 찾는 대조용)
+_FAMILY_LIKE = re.compile(r"Gemini \d[\w.+() ]{0,30}?:")
+
+
+# 도구 표 칸 -> [(계열 이름, 그 계열 글)]. 계열 머리가 없으면 [('', 칸 전체)]
+def _family_parts(cell):
+    heads = list(_FAMILY.finditer(cell))
+    if not heads:
+        return [("", cell)]
+    out = []
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(cell)
+        out.append((m.group(1), cell[m.end():end]))
+    return out
+
+
 def _g_row_item(name):
     """행 이름 -> (item, modality, variant). 못 정하면 None."""
     low = name.lower()
@@ -82,7 +100,7 @@ class _GoogleMd:
     def parse_rows(self, text):
         tables = _md.parse_tables(text)
         rows = []
-        tiers = ("Standard", "Batch", "Flex", "Priority")
+        tiers = ("Standard", "Batch", "Flex", "Priority", "Contributor")
         for t in tables:
             if not t.headings or not t.money_count():
                 continue
@@ -221,14 +239,25 @@ class _GoogleMd:
             for c in cells:
                 if "$" not in c:
                     continue
-                vals = _gpp(c, default_unit="per_call")
-                if vals:
-                    name = _FOOT.sub("", r[0]).strip()
-                    item = "grounding" if "grounding" in name.lower() else "tool_call"
-                    out.append(PriceRow(
-                        provider=self.provider, model=name, item=item,
-                        value=vals[0].value, unit=vals[0].unit,
-                        category=section, source_url=_MD_URL, note=c[:150]))
+                name = _FOOT.sub("", r[0]).strip()
+                item = "grounding" if "grounding" in name.lower() else "tool_call"
+                got = []
+                if len(_FAMILY_LIKE.findall(c)) != len(_FAMILY.findall(c)):
+                    self._warns.append(f"{self.provider}: 도구 표 칸의 모르는 모델 계열 표기 - "
+                                       f"{name} · {c[:80]}")
+                # 한 칸 안의 모델 계열별 단가: 'Gemini 2.5 models: ...', 'Gemini 3 and newer models: ...'
+                for family, part in _family_parts(c):
+                    if len(_md.MONEY.findall(part)) > 1:
+                        self._warns.append(f"{self.provider}: 도구 표 칸 한 계열 글에 금액 여럿, 첫 값만 받음 - "
+                                           f"{name} · {part[:80]}")
+                    vals = _gpp(part, default_unit="per_call")
+                    if vals:
+                        got.append(PriceRow(
+                            provider=self.provider, model=name, item=item,
+                            value=vals[0].value, unit=vals[0].unit, variant=family,
+                            category=section, source_url=_MD_URL, note=part[:150]))
+                if got:
+                    out += got
                     break
         return out
 

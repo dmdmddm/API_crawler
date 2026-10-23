@@ -196,6 +196,9 @@ class _PerplexityMd:
         (2026-08-15 명세), JSON 은 대조 전용 — 어긋나면 경고만."""
         i = text.find("const PRICING = {")
         if i < 0:
+            # 계산기 절이 페이지에 없는 날은 대조 대상 없음
+            if not _re.search(r"(?mi)^#+\s*Estimate your cost", text):
+                return []
             return [f"{self.provider}: 계산기 JSON 을 못 찾음 - 교차 대조 생략"]
         depth = 0
         j = i + len("const PRICING = ")
